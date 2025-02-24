@@ -1,6 +1,6 @@
 import RPi.GPIO as GPIO
 import time
-
+#Testing Raspberry pi 
 # Define GPIO pins for the motor driver
 IN1 = 3
 IN2 = 4
@@ -45,4 +45,4 @@ finally:
     GPIO.output(IN4, GPIO.LOW)
     pwmA.stop()
     pwmB.stop()
-    GPIO.cleanup()
+GPIO.cleanup()
