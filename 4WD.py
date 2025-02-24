@@ -73,31 +73,12 @@ def right(speed=50):
     set_speed(speed)
 
 # Main program
+# Main program
 try:
-    while True:
-        command = input("Enter command (f: forward, b: backward, l: left, r: right, s: stop)\n"
-                       "Optional: Add speed (0-100) after command (e.g., 'f 75'): ").strip().lower()
-        
-        parts = command.split()
-        cmd = parts[0]
-        speed = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 50
-        
-        # Ensure speed is within valid range
-        speed = max(0, min(100, speed))
-        
-        if cmd == 'f':
-            forward(speed)
-        elif cmd == 'b':
-            backward(speed)
-        elif cmd == 'l':
-            left(speed)
-        elif cmd == 'r':
-            right(speed)
-        elif cmd == 's':
-            stop()
-        else:
-            print("Invalid command")
-
+    print("Moving forward at 50% speed for 10 seconds...")
+    forward(50)  # Move forward at 50% speed for 10 seconds
+    print("Movement completed")
+    
 except KeyboardInterrupt:
     print("Program stopped")
 
