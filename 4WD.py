@@ -1,8 +1,6 @@
 import RPi.GPIO as GPIO
 import time
 
-#===================================Affects of Duty Cycle code==================================
-
 # Define GPIO pins for the motor driver
 IN1 = 3
 IN2 = 4
@@ -110,27 +108,15 @@ try:
     turn_right(80)  # 80% duty cycle for right turn
     time.sleep(5)
 
+except KeyboardInterrupt:
+    print("Program interrupted by user.")
+except Exception as e:
+    print(f"An error occurred: {e}")
 finally:
     # Stop the motors and clean up
+    print("Stopping motors and cleaning up GPIO...")
     stop_motors()
     pwmA.stop()
     pwmB.stop()
     GPIO.cleanup()
-
-# user@raspberrypi:~/Documents/SiviV2/Sivi_Spring_Project $ /usr/bin/python /home/user/Documents/SiviV2/Sivi_Spring_Project/4WD.py
-# Moving forward
-# Moving backward
-# Turning left
-# Turning right
-# Exception ignored in: <function PWM.__del__ at 0x7fb6042de0>
-# Traceback (most recent call last):
-#   File "/usr/lib/python3/dist-packages/RPi/GPIO/__init__.py", line 179, in __del__
-#   File "/usr/lib/python3/dist-packages/RPi/GPIO/__init__.py", line 202, in stop
-#   File "/usr/lib/python3/dist-packages/lgpio.py", line 1084, in tx_pwm
-# TypeError: unsupported operand type(s) for &: 'NoneType' and 'int'
-# Exception ignored in: <function PWM.__del__ at 0x7fb6042de0>
-# Traceback (most recent call last):
-#   File "/usr/lib/python3/dist-packages/RPi/GPIO/__init__.py", line 179, in __del__
-#   File "/usr/lib/python3/dist-packages/RPi/GPIO/__init__.py", line 202, in stop
-#   File "/usr/lib/python3/dist-packages/lgpio.py", line 1084, in tx_pwm
-# TypeError: unsupported operand type(s) for &: 'NoneType' and 'int'
+    print("GPIO cleanup complete.")
