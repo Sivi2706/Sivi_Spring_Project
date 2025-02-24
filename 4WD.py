@@ -116,3 +116,21 @@ finally:
     pwmA.stop()
     pwmB.stop()
     GPIO.cleanup()
+
+# user@raspberrypi:~/Documents/SiviV2/Sivi_Spring_Project $ /usr/bin/python /home/user/Documents/SiviV2/Sivi_Spring_Project/4WD.py
+# Moving forward
+# Moving backward
+# Turning left
+# Turning right
+# Exception ignored in: <function PWM.__del__ at 0x7fb6042de0>
+# Traceback (most recent call last):
+#   File "/usr/lib/python3/dist-packages/RPi/GPIO/__init__.py", line 179, in __del__
+#   File "/usr/lib/python3/dist-packages/RPi/GPIO/__init__.py", line 202, in stop
+#   File "/usr/lib/python3/dist-packages/lgpio.py", line 1084, in tx_pwm
+# TypeError: unsupported operand type(s) for &: 'NoneType' and 'int'
+# Exception ignored in: <function PWM.__del__ at 0x7fb6042de0>
+# Traceback (most recent call last):
+#   File "/usr/lib/python3/dist-packages/RPi/GPIO/__init__.py", line 179, in __del__
+#   File "/usr/lib/python3/dist-packages/RPi/GPIO/__init__.py", line 202, in stop
+#   File "/usr/lib/python3/dist-packages/lgpio.py", line 1084, in tx_pwm
+# TypeError: unsupported operand type(s) for &: 'NoneType' and 'int'
