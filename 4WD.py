@@ -31,9 +31,11 @@ def move_forward():
     GPIO.output(IN2, GPIO.LOW)
     GPIO.output(IN3, GPIO.HIGH)
     GPIO.output(IN4, GPIO.LOW)
+    GPIO.output(ENA, x)
+    GPIO.output(ENB. y)
 
 try:
-    move_forward()
+    move_forwar(x, y)
     print("Moving forward")
     time.sleep(5)  # Move forward for 5 seconds
 
