@@ -1,16 +1,18 @@
 import RPi.GPIO as GPIO
 import time
 
-# Define GPIO pins for motor control
-IN1 = 5 # IN1
-IN2 = 7  # IN2
-IN3 = 11  # IN3
-IN4 = 13  # IN4
-ENA = 3  # Enable Pin for Motor A
-ENB = 15  # Enable Pin for Motor B
+# Define GPIO pins for the motor driver
+IN1 = 3
+IN2 = 4
+IN3 = 17
+IN4 = 27
+ENA = 2
+ENB = 22
 
-# Setup GPIO
+# Set up the GPIO mode
 GPIO.setmode(GPIO.BCM)
+
+# Set up the GPIO pins as outputs
 GPIO.setup(IN1, GPIO.OUT)
 GPIO.setup(IN2, GPIO.OUT)
 GPIO.setup(IN3, GPIO.OUT)
@@ -18,72 +20,29 @@ GPIO.setup(IN4, GPIO.OUT)
 GPIO.setup(ENA, GPIO.OUT)
 GPIO.setup(ENB, GPIO.OUT)
 
-# Setup PWM
-pwm_a = GPIO.PWM(ENA, 100)  # Create PWM instance for Motor A at 100Hz
-pwm_b = GPIO.PWM(ENB, 100)  # Create PWM instance for Motor B at 100Hz
-pwm_a.start(0)  # Start PWM with 0% duty cycle
-pwm_b.start(0)  # Start PWM with 0% duty cycle
+# Set up PWM for speed control
+pwmA = GPIO.PWM(ENA, 1000)
+pwmB = GPIO.PWM(ENB, 1000)
+pwmA.start(100)  # Set speed to 100%
+pwmB.start(100)  # Set speed to 100%
 
-def set_speed(speed):
-    """
-    Set speed for both motors
-    speed: 0-100 (percentage of maximum speed)
-    """
-    pwm_a.ChangeDutyCycle(speed)
-    pwm_b.ChangeDutyCycle(speed)
-
-# Function to stop the car
-def stop():
-    GPIO.output(IN1, GPIO.LOW)
-    GPIO.output(IN2, GPIO.LOW)
-    GPIO.output(IN3, GPIO.LOW)
-    GPIO.output(IN4, GPIO.LOW)
-    set_speed(0)
-
-# Function to move the car forward
-def forward(speed=50):
+def move_forward():
     GPIO.output(IN1, GPIO.HIGH)
     GPIO.output(IN2, GPIO.LOW)
     GPIO.output(IN3, GPIO.HIGH)
     GPIO.output(IN4, GPIO.LOW)
-    set_speed(speed)
 
-# Function to move the car backward
-def backward(speed=50):
-    GPIO.output(IN1, GPIO.LOW)
-    GPIO.output(IN2, GPIO.HIGH)
-    GPIO.output(IN3, GPIO.LOW)
-    GPIO.output(IN4, GPIO.HIGH)
-    set_speed(speed)
-
-# Function to turn the car left
-def left(speed=50):
-    GPIO.output(IN1, GPIO.LOW)
-    GPIO.output(IN2, GPIO.HIGH)
-    GPIO.output(IN3, GPIO.HIGH)
-    GPIO.output(IN4, GPIO.LOW)
-    set_speed(speed)
-
-# Function to turn the car right
-def right(speed=50):
-    GPIO.output(IN1, GPIO.HIGH)
-    GPIO.output(IN2, GPIO.LOW)
-    GPIO.output(IN3, GPIO.LOW)
-    GPIO.output(IN4, GPIO.HIGH)
-    set_speed(speed)
-
-# Main program
-# Main program
 try:
-    print("Moving forward at 50% speed for 10 seconds...")
-    forward(50)  # Move forward at 50% speed for 10 seconds
-    print("Movement completed")
-    
-except KeyboardInterrupt:
-    print("Program stopped")
+    move_forward()
+    print("Moving forward")
+    time.sleep(5)  # Move forward for 5 seconds
 
 finally:
-    # Clean up GPIO on exit
-    pwm_a.stop()
-    pwm_b.stop()
-    GPIO.cleanup()
+    # Stop the motors
+    GPIO.output(IN1, GPIO.LOW)
+    GPIO.output(IN2, GPIO.LOW)
+    GPIO.output(IN3, GPIO.LOW)
+    GPIO.output(IN4, GPIO.LOW)
+    pwmA.stop()
+    pwmB.stop()
+    GPIO.cleanup()
