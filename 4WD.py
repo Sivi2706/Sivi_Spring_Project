@@ -34,7 +34,7 @@ pwmB.start(0)  # Start with 0% duty cycle (stopped)
 # Rotary encoder variables
 pulsesRight = 0
 pulsesLeft = 0
-wheelCircumference = 0.05 * math.pi * 0.0325 * 100
+wheelCircumference = 0.05 * math.pi * 0.0325 * 100  # Example calculation, adjust based on actual wheel specs
 
 def counter_update_right(channel):
     global pulsesRight
@@ -73,50 +73,9 @@ def move_forward(duty_cycle):
     pwmA.ChangeDutyCycle(duty_cycle)
     pwmB.ChangeDutyCycle(duty_cycle)
     time.sleep(1)
+    stop_motors()  # Stop the motors after moving for 1 second
     rightDist, leftDist, avgDist = get_moving_distance()
     print(f"Forward - Right: {rightDist:.4f}m, Left: {leftDist:.4f}m, Avg: {avgDist:.4f}m")
-
-def move_backward(duty_cycle):
-    if not (45 <= duty_cycle <= 55):
-        print("Warning: Optimal backward duty cycle is between 45-55%")
-    reset_distance()
-    GPIO.output(IN1, GPIO.LOW)
-    GPIO.output(IN2, GPIO.HIGH)
-    GPIO.output(IN3, GPIO.LOW)
-    GPIO.output(IN4, GPIO.HIGH)
-    pwmA.ChangeDutyCycle(duty_cycle)
-    pwmB.ChangeDutyCycle(duty_cycle)
-    time.sleep(1)
-    rightDist, leftDist, avgDist = get_moving_distance()
-    print(f"Backward - Right: {rightDist:.4f}m, Left: {leftDist:.4f}m, Avg: {avgDist:.4f}m")
-
-def turn_left(duty_cycle):
-    if not (85 <= duty_cycle <= 100):
-        print("Warning: Optimal left turn duty cycle is between 85-100%")
-    reset_distance()
-    GPIO.output(IN1, GPIO.LOW)
-    GPIO.output(IN2, GPIO.HIGH)
-    GPIO.output(IN3, GPIO.HIGH)
-    GPIO.output(IN4, GPIO.LOW)
-    pwmA.ChangeDutyCycle(duty_cycle)
-    pwmB.ChangeDutyCycle(duty_cycle)
-    time.sleep(1)
-    rightDist, leftDist, avgDist = get_moving_distance()
-    print(f"Left Turn - Right: {rightDist:.4f}m, Left: {leftDist:.4f}m, Avg: {avgDist:.4f}m")
-
-def turn_right(duty_cycle):
-    if not (75 <= duty_cycle <= 85):
-        print("Warning: Optimal right turn duty cycle is between 75-85%")
-    reset_distance()
-    GPIO.output(IN1, GPIO.HIGH)
-    GPIO.output(IN2, GPIO.LOW)
-    GPIO.output(IN3, GPIO.LOW)
-    GPIO.output(IN4, GPIO.HIGH)
-    pwmA.ChangeDutyCycle(duty_cycle)
-    pwmB.ChangeDutyCycle(duty_cycle)
-    time.sleep(1)
-    rightDist, leftDist, avgDist = get_moving_distance()
-    print(f"Right Turn - Right: {rightDist:.4f}m, Left: {leftDist:.4f}m, Avg: {avgDist:.4f}m")
 
 def stop_motors():
     GPIO.output(IN1, GPIO.LOW)
@@ -128,21 +87,8 @@ def stop_motors():
 
 try:
     encoder_setup()
-    print("Moving forward")
-    move_forward(50)
-    time.sleep(2)
-
-    print("Moving backward")
-    move_backward(50)
-    time.sleep(2)
-
-    print("Turning left")
-    turn_left(90)
-    time.sleep(2)
-
-    print("Turning right")
-    turn_right(80)
-    time.sleep(2)
+    print("Moving forward for 1 second...")
+    move_forward(50)  # This will move forward, stop after 1s, and print distances
 
 except KeyboardInterrupt:
     print("Program interrupted by user.")
