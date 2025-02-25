@@ -2,7 +2,7 @@ import RPi.GPIO as GPIO
 import time
 
 
-#mmmmm
+# Hong Min
 
 
 # Define GPIO pins for the motor driver
