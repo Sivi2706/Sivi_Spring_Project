@@ -34,9 +34,8 @@ pwmB.start(0)  # Start with 0% duty cycle (stopped)
 # Rotary encoder variables
 pulsesRight = 0
 pulsesLeft = 0
-wheelCircumference = 0.065 * math.pi * 100  # Example calculation, adjust based on actual wheel specs
-
-
+wheelDiameter = 6.5  # Wheel diameter in centimeters
+wheelCircumference = wheelDiameter * math.pi  # Wheel circumference in centimeters
 
 def counter_update_right(channel):
     global pulsesRight
@@ -54,8 +53,10 @@ def encoder_setup():
 
 def get_moving_distance():
     global pulsesRight, pulsesLeft
+    # Calculate distance for each wheel
     distanceRight = pulsesRight * wheelCircumference
     distanceLeft = pulsesLeft * wheelCircumference
+    # Calculate average distance
     averageDistance = (distanceRight + distanceLeft) / 2.0
     return distanceRight, distanceLeft, averageDistance
 
@@ -67,15 +68,15 @@ def reset_distance():
 def move_forward(duty_cycle):
     if not (45 <= duty_cycle <= 55):
         print("Warning: Optimal forward duty cycle is between 45-55%")
-    reset_distance()
+    reset_distance()  # Reset distance counter before starting movement
     GPIO.output(IN1, GPIO.HIGH)
     GPIO.output(IN2, GPIO.LOW)
     GPIO.output(IN3, GPIO.HIGH)
     GPIO.output(IN4, GPIO.LOW)
     pwmA.ChangeDutyCycle(duty_cycle)
     pwmB.ChangeDutyCycle(duty_cycle)
-    time.sleep(1)
-    stop_motors()  # Stop the motors after moving for 1 second
+    time.sleep(1)  # Move for 1 second
+    stop_motors()  # Stop the motors after moving
     rightDist, leftDist, avgDist = get_moving_distance()
     print(f"Forward - Right: {rightDist:.4f}cm, Left: {leftDist:.4f}cm, Avg: {avgDist:.4f}cm")
 
@@ -101,17 +102,22 @@ def pwm_demo():
     print("PWM demonstration complete.")
 
 try:
+    # Setup rotary encoders
     encoder_setup()
 
-    print("Moving forward for 1 second...")
-    move_forward(50)  # This will move forward, stop after 1s, and print distances
+    # PWM demonstration
+    pwm_demo()
 
+    # Move forward for 1 second and print distances
+    print("Moving forward for 1 second...")
+    move_forward(50)  # Move forward with 50% duty cycle
 
 except KeyboardInterrupt:
     print("Program interrupted by user.")
 except Exception as e:
     print(f"An error occurred: {e}")
 finally:
+    # Stop the motors and clean up GPIO
     print("Stopping motors and cleaning up GPIO...")
     stop_motors()
     pwmA.stop()
