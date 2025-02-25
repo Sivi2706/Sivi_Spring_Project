@@ -34,7 +34,7 @@ pwmB.start(0)  # Start with 0% duty cycle (stopped)
 # Rotary encoder variables
 pulsesRight = 0
 pulsesLeft = 0
-wheelCircumference = 0.05 * math.pi * 0.0325 * 100  # Example calculation, adjust based on actual wheel specs
+wheelCircumference = 0.065 * math.pi * 100  # Example calculation, adjust based on actual wheel specs
 
 
 
@@ -77,7 +77,7 @@ def move_forward(duty_cycle):
     time.sleep(1)
     stop_motors()  # Stop the motors after moving for 1 second
     rightDist, leftDist, avgDist = get_moving_distance()
-    print(f"Forward - Right: {rightDist:.4f}m, Left: {leftDist:.4f}m, Avg: {avgDist:.4f}m")
+    print(f"Forward - Right: {rightDist:.4f}cm, Left: {leftDist:.4f}cm, Avg: {avgDist:.4f}cm")
 
 def stop_motors():
     GPIO.output(IN1, GPIO.LOW)
