@@ -7,8 +7,8 @@ IN1 = 4
 IN2 = 17
 IN3 = 27
 IN4 = 22
-ENA = 18
-ENB = 23
+ENA = 18  # PWM pin for motor A
+ENB = 23  # PWM pin for motor B
 
 # Define GPIO pins for the rotary encoders
 encoderPinRight = 24  # Right encoder
@@ -26,15 +26,15 @@ GPIO.setup(ENA, GPIO.OUT)
 GPIO.setup(ENB, GPIO.OUT)
 
 # Set up PWM for duty cycle control
-pwmA = GPIO.PWM(ENA, 100)  # Using 100Hz as base frequency
-pwmB = GPIO.PWM(ENB, 100)  # Using 100Hz as base frequency
+pwmA = GPIO.PWM(ENA, 100)  # Using 100Hz as base frequency for motor A
+pwmB = GPIO.PWM(ENB, 100)  # Using 100Hz as base frequency for motor B
 pwmA.start(0)  # Start with 0% duty cycle (stopped)
 pwmB.start(0)  # Start with 0% duty cycle (stopped)
 
 # Rotary encoder variables
 pulsesRight = 0
 pulsesLeft = 0
-wheelCircumference = 0.05 * math.pi * 0.0325 * 100
+wheelCircumference = 0.05 * math.pi * 0.0325 * 100  # Wheel circumference in meters
 
 def counter_update_right(channel):
     global pulsesRight
@@ -126,8 +126,27 @@ def stop_motors():
     pwmA.ChangeDutyCycle(0)
     pwmB.ChangeDutyCycle(0)
 
+# PWM demonstration for motor speed control
+def pwm_demo():
+    print("Starting PWM demonstration for motor speed control...")
+    for x in range(50):  # Increase duty cycle from 0% to 50%
+        pwmA.ChangeDutyCycle(x)
+        pwmB.ChangeDutyCycle(x)
+        time.sleep(0.1)
+    for x in range(50):  # Decrease duty cycle from 50% to 0%
+        pwmA.ChangeDutyCycle(50 - x)
+        pwmB.ChangeDutyCycle(50 - x)
+        time.sleep(0.1)
+    print("PWM demonstration complete.")
+
 try:
     encoder_setup()
+    print("Starting motor control with PWM...")
+
+    # PWM demonstration
+    pwm_demo()
+
+    # Motor control with distance measurement
     print("Moving forward")
     move_forward(50)
     time.sleep(2)
