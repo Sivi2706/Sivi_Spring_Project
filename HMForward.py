@@ -4,14 +4,14 @@ import numpy as np
 
 # Define GPIO pins
 IN1, IN2 = 27, 17          # Right motor control
-IN3, IN4 = 4, 3        # Left motor control
-ENA, ENB = 22, 2         # PWM pins for motors
-encoderPinRight = 18    # Right encoder
-encoderPinLeft = 14      # Left encoder
-ServoMotor = 24 # servo motoor for the camera 
+IN3, IN4 = 4, 3            # Left motor control
+ENA, ENB = 22, 2           # PWM pins for motors
+encoderPinRight = 18       # Right encoder
+encoderPinLeft = 14        # Left encoder
+ServoMotor = 24            # Servo motor for the camera 
 
 # Constants (to be calibrated)
-WHEEL_DIAMETER = 4.05  # cm
+WHEEL_DIAMETER = 4.05      # cm
 PULSES_PER_REVOLUTION = 20
 WHEEL_CIRCUMFERENCE = np.pi * WHEEL_DIAMETER  # cm
 
@@ -26,7 +26,9 @@ def right_encoder_callback(channel):
 
 def left_encoder_callback(channel):
     global left_counter
-    left_counter += 1
+    # Only count the rising edge for the left encoder
+    if GPIO.input(encoderPinLeft) == GPIO.HIGH:
+        left_counter += 1
 
 # GPIO Setup
 def setup_gpio():
@@ -47,7 +49,7 @@ def setup_gpio():
     
     # Set up encoder interrupts
     GPIO.add_event_detect(encoderPinRight, GPIO.RISING, callback=right_encoder_callback)
-    GPIO.add_event_detect(encoderPinLeft, GPIO.RISING, callback=left_encoder_callback)
+    GPIO.add_event_detect(encoderPinLeft, GPIO.BOTH, callback=left_encoder_callback)  # Use BOTH for left encoder
     
     # Set up PWM
     right_pwm = GPIO.PWM(ENA, 1000)  # 1000 Hz frequency
