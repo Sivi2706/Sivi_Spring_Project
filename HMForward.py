@@ -3,14 +3,15 @@ import time
 import numpy as np
 
 # Define GPIO pins
-IN1, IN2 = 4, 17          # Right motor control
-IN3, IN4 = 27, 22         # Left motor control
-ENA, ENB = 18, 23         # PWM pins for motors
-encoderPinRight = 24      # Right encoder
-encoderPinLeft = 25       # Left encoder
+IN1, IN2 = 27, 17          # Right motor control
+IN3, IN4 = 4, 3        # Left motor control
+ENA, ENB = 22, 2         # PWM pins for motors
+encoderPinRight = 18    # Right encoder
+encoderPinLeft = 14      # Left encoder
+ServoMotor = 24 # servo motoor for the camera 
 
 # Constants (to be calibrated)
-WHEEL_DIAMETER = 6.5  # cm
+WHEEL_DIAMETER = 4.05  # cm
 PULSES_PER_REVOLUTION = 20
 WHEEL_CIRCUMFERENCE = np.pi * WHEEL_DIAMETER  # cm
 
