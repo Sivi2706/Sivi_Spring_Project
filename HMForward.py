@@ -57,7 +57,7 @@ def setup_gpio():
     
     return right_pwm, left_pwm
 
-# Movement functions
+# Function to move forward
 def move_forward(right_pwm, left_pwm, speed):
     GPIO.output(IN1, GPIO.HIGH)
     GPIO.output(IN2, GPIO.LOW)
@@ -66,48 +66,7 @@ def move_forward(right_pwm, left_pwm, speed):
     right_pwm.ChangeDutyCycle(speed)
     left_pwm.ChangeDutyCycle(speed)
 
-def move_backward(right_pwm, left_pwm, speed):
-    GPIO.output(IN1, GPIO.LOW)
-    GPIO.output(IN2, GPIO.HIGH)
-    GPIO.output(IN3, GPIO.LOW)
-    GPIO.output(IN4, GPIO.HIGH)
-    right_pwm.ChangeDutyCycle(speed)
-    left_pwm.ChangeDutyCycle(speed)
-
-def turn_right(right_pwm, left_pwm, speed):
-    GPIO.output(IN1, GPIO.LOW)
-    GPIO.output(IN2, GPIO.HIGH)
-    GPIO.output(IN3, GPIO.HIGH)
-    GPIO.output(IN4, GPIO.LOW)
-    right_pwm.ChangeDutyCycle(speed)
-    left_pwm.ChangeDutyCycle(speed)
-
-def turn_left(right_pwm, left_pwm, speed):
-    GPIO.output(IN1, GPIO.HIGH)
-    GPIO.output(IN2, GPIO.LOW)
-    GPIO.output(IN3, GPIO.LOW)
-    GPIO.output(IN4, GPIO.HIGH)
-    right_pwm.ChangeDutyCycle(speed)
-    left_pwm.ChangeDutyCycle(speed)
-
-def pivot_right(right_pwm, left_pwm, speed):
-    # Right wheel stopped, left wheel forward
-    GPIO.output(IN1, GPIO.LOW)
-    GPIO.output(IN2, GPIO.LOW)
-    GPIO.output(IN3, GPIO.HIGH)
-    GPIO.output(IN4, GPIO.LOW)
-    right_pwm.ChangeDutyCycle(0)
-    left_pwm.ChangeDutyCycle(speed)
-
-def pivot_left(right_pwm, left_pwm, speed):
-    # Left wheel stopped, right wheel forward
-    GPIO.output(IN1, GPIO.HIGH)
-    GPIO.output(IN2, GPIO.LOW)
-    GPIO.output(IN3, GPIO.LOW)
-    GPIO.output(IN4, GPIO.LOW)
-    right_pwm.ChangeDutyCycle(speed)
-    left_pwm.ChangeDutyCycle(0)
-
+# Function to stop motors
 def stop_motors(right_pwm, left_pwm):
     right_pwm.ChangeDutyCycle(0)
     left_pwm.ChangeDutyCycle(0)
@@ -122,119 +81,56 @@ def calculate_distance(encoder_count):
     distance = revolutions * WHEEL_CIRCUMFERENCE
     return distance
 
-# Print movement stats
-def print_movement_stats():
-    global right_counter, left_counter
-    
-    # Calculate distances
-    right_distance = calculate_distance(right_counter)
-    left_distance = calculate_distance(left_counter)
-    distance_difference = abs(right_distance - left_distance)
-    
-    print(f"Right Encoder Pulses: {right_counter}")
-    print(f"Left Encoder Pulses: {left_counter}")
-    print(f"Right Encoder Distance: {right_distance:.2f} cm")
-    print(f"Left Encoder Distance: {left_distance:.2f} cm")
-    print(f"Difference: {distance_difference:.2f} cm")
-
 # Main loop for manual control
-def manual_control():
+def manual_pwm_control():
     global right_counter, left_counter
     right_pwm, left_pwm = setup_gpio()
     
-    print("\n==== Robot Movement Testing Program ====")
-    print("Commands:")
-    print("  f <speed> - Move forward")
-    print("  b <speed> - Move backward")
-    print("  r <speed> - Turn right (both motors)")
-    print("  l <speed> - Turn left (both motors)")
-    print("  pr <speed> - Pivot right (left motor only)")
-    print("  pl <speed> - Pivot left (right motor only)")
-    print("  s - Stop motors")
-    print("  t <time> - Set movement time (seconds)")
-    print("  q - Quit")
-    
-    movement_time = 1.0  # Default movement time in seconds
-    
     try:
         while True:
-            command = input("\nEnter command (f/b/r/l/pr/pl/s/t/q): ").strip().lower()
+            pwm_value = input("Enter PWM value (0-100) or 'q' to quit: ")
             
-            if command == 'q':
+            if pwm_value.lower() == 'q':
                 break
-                
-            if command == 's':
-                stop_motors(right_pwm, left_pwm)
-                print("Motors stopped.")
-                continue
-                
-            if command.startswith('t '):
-                try:
-                    movement_time = float(command.split()[1])
-                    print(f"Movement time set to {movement_time:.1f} seconds")
-                except (ValueError, IndexError):
-                    print("Invalid time value. Please use format 't <seconds>'")
-                continue
-                
-            # For movement commands
+            
             try:
-                cmd_parts = command.split()
-                if len(cmd_parts) != 2:
-                    print("Please use format '<command> <speed>'")
-                    continue
+                pwm_value = float(pwm_value)
+                if 0 <= pwm_value <= 100:
+                    print(f"Running motors at PWM: {pwm_value}")
                     
-                cmd, speed = cmd_parts
-                speed = float(speed)
-                
-                if not (0 <= speed <= 100):
-                    print("Speed must be between 0 and 100")
-                    continue
-                
-                # Reset encoder counts
-                right_counter = 0
-                left_counter = 0
-                
-                # Execute movement based on command
-                if cmd == 'f':
-                    print(f"Moving forward at {speed}% for {movement_time:.1f} seconds")
-                    move_forward(right_pwm, left_pwm, speed)
-                elif cmd == 'b':
-                    print(f"Moving backward at {speed}% for {movement_time:.1f} seconds")
-                    move_backward(right_pwm, left_pwm, speed)
-                elif cmd == 'r':
-                    print(f"Turning right at {speed}% for {movement_time:.1f} seconds")
-                    turn_right(right_pwm, left_pwm, speed)
-                elif cmd == 'l':
-                    print(f"Turning left at {speed}% for {movement_time:.1f} seconds")
-                    turn_left(right_pwm, left_pwm, speed)
-                elif cmd == 'pr':
-                    print(f"Pivoting right at {speed}% for {movement_time:.1f} seconds")
-                    pivot_right(right_pwm, left_pwm, speed)
-                elif cmd == 'pl':
-                    print(f"Pivoting left at {speed}% for {movement_time:.1f} seconds")
-                    pivot_left(right_pwm, left_pwm, speed)
+                    # Reset encoder counts
+                    right_counter = 0
+                    left_counter = 0
+                    
+                    move_forward(right_pwm, left_pwm, pwm_value)
+                    time.sleep(1)  # Run for 1 second
+                    stop_motors(right_pwm, left_pwm)
+                    
+                    # Calculate distances
+                    right_distance = calculate_distance(right_counter)
+                    left_distance = calculate_distance(left_counter)
+                    distance_difference = abs(right_distance - left_distance)
+                    
+                    print(f"Right Encoder Pulses: {right_counter}")
+                    print(f"Left Encoder Pulses: {left_counter}")
+                    print(f"Right Encoder Distance: {right_distance:.2f} cm")
+                    print(f"Left Encoder Distance: {left_distance:.2f} cm")
+                    print(f"Difference: {distance_difference:.2f} cm")
+                    print("Motors stopped. Enter new PWM value.")
                 else:
-                    print(f"Unknown command: {cmd}")
-                    continue
-                
-                # Run for specified time
-                time.sleep(movement_time)
-                stop_motors(right_pwm, left_pwm)
-                print("Motors stopped.")
-                
-                # Print movement statistics
-                print_movement_stats()
-                
-            except (ValueError, IndexError):
-                print("Invalid command format. Use '<command> <speed>'")
+                    print("Please enter a value between 0 and 100.")
+            except ValueError:
+                print("Invalid input. Enter a number between 0 and 100.")
     
     except KeyboardInterrupt:
         print("\nManual control stopped by user.")
     finally:
-        stop_motors(right_pwm, left_pwm)
         GPIO.cleanup()
         print("GPIO cleaned up.")
 
 # Run the manual control function
 if __name__ == "__main__":
     manual_control()
+
+    manual_pwm_control()
+
