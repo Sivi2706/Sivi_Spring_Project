@@ -7,7 +7,7 @@ from picamera2 import Picamera2
 # Define GPIO pins (from Main_Motor.py)
 IN1, IN2 = 22, 27         # Left motor control
 IN3, IN4 = 17, 4          # Right motor control
-ENA, ENB = 13, 12         # PWM pins for motors
+ENA, ENB = 13, 12         # PWM pins for motors ENA=Right ENB=Left
 encoderPinRight = 23      # Right encoder
 encoderPinLeft = 24       # Left encoder
 ServoMotor = 18           # Servo motor PWM for the camera
@@ -75,6 +75,18 @@ def setup_gpio():
     
     return right_pwm, left_pwm
 
+# Modified move_forward function to support steering
+def move_forward(right_pwm, left_pwm, right_speed, left_speed):
+    # Set direction to forward for both motors
+    GPIO.output(IN1, GPIO.LOW)
+    GPIO.output(IN2, GPIO.HIGH)
+    GPIO.output(IN3, GPIO.LOW)
+    GPIO.output(IN4, GPIO.HIGH)
+    
+    # Apply different speeds to enable steering
+    right_pwm.ChangeDutyCycle(right_speed)
+    left_pwm.ChangeDutyCycle(left_speed)
+
 # Motor control functions (modified from Main_Motor.py)
 def set_motor_speeds(right_pwm, left_pwm, right_speed, left_speed):
     # Ensure speeds are within 0-100 range
@@ -125,10 +137,6 @@ def detect_line(frame):
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     
     # Define specific range for black color detection
-    # Original threshold (black only)
-    # lower_black = np.array([0, 0, 0])
-    # upper_black = np.array([180, 255, 50])
-
     # Modified threshold (black and gray)
     lower_black = np.array([0, 0, 0])
     upper_black = np.array([180, 255, 120])  # Increased upper V value to include gray
@@ -237,12 +245,18 @@ def main():
             right_speed = BASE_SPEED - correction
             left_speed = BASE_SPEED + correction
             
-            # Apply motor speeds
-            set_motor_speeds(right_pwm, left_pwm, right_speed, left_speed)
+            # Ensure speeds are within valid range
+            right_speed = max(0, min(100, right_speed))
+            left_speed = max(0, min(100, left_speed))
             
-            # Display information
-            cv2.putText(frame, f"Left: {left_speed:.1f} | Right: {right_speed:.1f}", 
+            # Apply forward movement with steering
+            move_forward(right_pwm, left_pwm, right_speed, left_speed)
+            
+            # Display PWM values on screen
+            cv2.putText(frame, f"ENA (Right): {right_speed:.1f}%", 
                        (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+            cv2.putText(frame, f"ENB (Left): {left_speed:.1f}%", 
+                       (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
             
             # Show the frame
             cv2.imshow("Line Follower", frame)
