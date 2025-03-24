@@ -4,31 +4,35 @@ import numpy as np
 import cv2
 from picamera2 import Picamera2
 
-# Define GPIO pins
+# Define GPIO pins (from Main_Motor.py)
 IN1, IN2 = 22, 27         # Left motor control
 IN3, IN4 = 17, 4          # Right motor control
-ENA, ENB = 13, 12         # PWM pins for motors
+ENA, ENB = 13, 12         # PWM pins for motors ENA=Right ENB=Left
 encoderPinRight = 23      # Right encoder
 encoderPinLeft = 24       # Left encoder
 ServoMotor = 18           # Servo motor PWM for the camera
 
-# Constants
+# Constants (to be calibrated)
 WHEEL_DIAMETER = 4.05  # cm
 PULSES_PER_REVOLUTION = 20
 WHEEL_CIRCUMFERENCE = np.pi * WHEEL_DIAMETER  # cm
 
+# Variables to store encoder counts
+right_counter = 0
+left_counter = 0
+
 # Line following parameters
-BASE_SPEED = 50
-MIN_CONTOUR_AREA = 1000
-FRAME_WIDTH = 640
-FRAME_HEIGHT = 480
-ROI_HEIGHT = 150
-ROI_OFFSET = 250
+BASE_SPEED = 50           # Base motor speed (0-100)
+MIN_CONTOUR_AREA = 1000   # Minimum area for valid contours
+FRAME_WIDTH = 640         # Camera frame width
+FRAME_HEIGHT = 480        # Camera frame height
+ROI_HEIGHT = 150          # Height of region of interest
+ROI_OFFSET = 250          # Offset from bottom of frame
 
 # PID Controller parameters
-kp = 0.5
-ki = 0.01
-kd = 0.2
+kp = 0.5                  # Proportional gain
+ki = 0.01                 # Integral gain
+kd = 0.2                  # Derivative gain
 previous_error = 0
 integral = 0
 
@@ -67,7 +71,6 @@ def setup_gpio():
     
     return right_pwm, left_pwm
 
-# Motor control functions
 def move_forward(right_pwm, left_pwm, speed):
     GPIO.output(IN1, GPIO.LOW)
     GPIO.output(IN2, GPIO.HIGH)
@@ -108,14 +111,12 @@ def stop_motors(right_pwm, left_pwm):
     GPIO.output(IN3, GPIO.LOW)
     GPIO.output(IN4, GPIO.LOW)
 
-# Initialize camera
 def setup_camera():
     picam2 = Picamera2()
     picam2.configure(picam2.create_preview_configuration(main={"size": (FRAME_WIDTH, FRAME_HEIGHT)}))
     picam2.start()
     return picam2
 
-# Line detection function
 def detect_line(frame):
     global previous_error, integral
     
@@ -128,47 +129,43 @@ def detect_line(frame):
     
     mask_black = cv2.inRange(roi_hsv, lower_black, upper_black)
     
-    kernel = np.ones((5, 5), np.uint8)
-    mask_black = cv2.erode(mask_black, kernel, iterations=1)
-    mask_black = cv2.dilate(mask_black, kernel, iterations=1)
-    
     contours, _ = cv2.findContours(mask_black, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    center_x = FRAME_WIDTH // 2
     
     if contours:
         largest_contour = max(contours, key=cv2.contourArea)
+        
         if cv2.contourArea(largest_contour) > MIN_CONTOUR_AREA:
             M = cv2.moments(largest_contour)
             if M["m00"] != 0:
                 cx = int(M["m10"] / M["m00"])
-                center_x = FRAME_WIDTH // 2
                 error = cx - center_x
                 return error
-    
     return 0
 
-# Movement control based on error
-def control_movement(right_pwm, left_pwm, error, speed):
-    if error > 20:
-        turn_right(right_pwm, left_pwm, speed)
-    elif error < -20:
-        turn_left(right_pwm, left_pwm, speed)
-    else:
-        move_forward(right_pwm, left_pwm, speed)
-
-# Main function
 def main():
     right_pwm, left_pwm = setup_gpio()
     picam2 = setup_camera()
-    
-    print("Line follower started. Press Ctrl+C to stop.")
     
     try:
         while True:
             frame = picam2.capture_array()
             error = detect_line(frame)
-            control_movement(right_pwm, left_pwm, error, BASE_SPEED)
             
+            if error > 20:
+                turn_right(right_pwm, left_pwm, BASE_SPEED)
+                command = "Turning Right"
+            elif error < -20:
+                turn_left(right_pwm, left_pwm, BASE_SPEED)
+                command = "Turning Left"
+            else:
+                move_forward(right_pwm, left_pwm, BASE_SPEED)
+                command = "Moving Forward"
+            
+            cv2.putText(frame, command, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
             cv2.imshow("Line Follower", frame)
+            
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
     
