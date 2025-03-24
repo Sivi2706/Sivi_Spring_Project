@@ -125,8 +125,13 @@ def detect_line(frame):
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     
     # Define specific range for black color detection
+    # Original threshold (black only)
+    # lower_black = np.array([0, 0, 0])
+    # upper_black = np.array([180, 255, 50])
+
+    # Modified threshold (black and gray)
     lower_black = np.array([0, 0, 0])
-    upper_black = np.array([180, 255, 50])
+    upper_black = np.array([180, 255, 120])  # Increased upper V value to include gray
     
     # Apply ROI (Region of Interest) - only look at the lower portion of the frame
     roi = frame[FRAME_HEIGHT-ROI_OFFSET:FRAME_HEIGHT-ROI_OFFSET+ROI_HEIGHT, 0:FRAME_WIDTH]
