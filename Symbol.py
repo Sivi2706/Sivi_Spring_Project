@@ -41,8 +41,8 @@ def detect_shapes_and_highlight_colors(frame):
             mean_color = cv2.mean(frame, mask=mask)
 
             # Create a solid color image using the mean color
-            solid_color = np.zeros_like(frame)
-            solid_color[:] = mean_color[:3]  # Use only BGR values (ignore alpha if present)
+            solid_color = np.zeros_like(frame)  # Shape will be (480, 640, 4)
+            solid_color[:, :] = mean_color[:3]  # Assign BGR values to all pixels
 
             # Blend the solid color with the original frame using the mask
             highlighted = cv2.bitwise_and(solid_color, solid_color, mask=mask)
