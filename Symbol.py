@@ -20,6 +20,10 @@ if picam2 is None:
 
 # Function to detect shapes and arrows
 def detect_shapes_and_arrows(frame):
+    # Convert the frame to 3-channel BGR if it has 4 channels (e.g., RGBA)
+    if frame.shape[2] == 4:
+        frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+
     # Convert to grayscale and apply edge detection
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
@@ -56,10 +60,16 @@ def detect_shapes_and_arrows(frame):
     # Convert the grayscale edges back to BGR (RGB) for display
     edges_bgr = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
 
-    # Optionally, you can overlay the edges on the original frame
+    # Ensure edges_bgr has the same dimensions as frame
+    if edges_bgr.shape != frame.shape:
+        edges_bgr = cv2.resize(edges_bgr, (frame.shape[1], frame.shape[0]))
+
+    # Overlay the edges on the original frame
     output_frame = cv2.addWeighted(frame, 0.8, edges_bgr, 0.2, 0)
 
     return output_frame
+
+
 # Main loop
 while True:
     # Capture frame from the camera
