@@ -18,9 +18,9 @@ if picam2 is None:
     print("Exiting program. Camera could not be initialized.")
     exit()
 
-# Function to detect shapes and arrows
-def detect_shapes_and_arrows(frame):
-    # Convert to grayscale and apply edge detection
+# Function to detect shapes and highlight solid colors within them
+def detect_shapes_and_highlight_colors(frame):
+    # Convert to grayscale for edge detection
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     edges = cv2.Canny(blurred, 50, 150)
@@ -32,6 +32,21 @@ def detect_shapes_and_arrows(frame):
             # Approximate the contour
             epsilon = 0.01 * cv2.arcLength(c, True)
             approx = cv2.approxPolyDP(c, epsilon, True)
+
+            # Create a mask for the detected shape
+            mask = np.zeros_like(gray)
+            cv2.drawContours(mask, [approx], -1, 255, -1)
+
+            # Get the mean color within the shape
+            mean_color = cv2.mean(frame, mask=mask)
+
+            # Create a solid color image using the mean color
+            solid_color = np.zeros_like(frame)
+            solid_color[:] = mean_color[:3]  # Use only BGR values (ignore alpha if present)
+
+            # Blend the solid color with the original frame using the mask
+            highlighted = cv2.bitwise_and(solid_color, solid_color, mask=mask)
+            frame = cv2.addWeighted(frame, 1, highlighted, 0.5, 0)
 
             # Draw the contour and bounding box
             cv2.drawContours(frame, [approx], -1, (0, 255, 0), 2)
@@ -63,8 +78,8 @@ while True:
     # Flip the frame vertically (optional, depending on your camera orientation)
     frame = cv2.flip(frame, -1)
 
-    # Detect shapes and arrows
-    output_frame = detect_shapes_and_arrows(frame)
+    # Detect shapes and highlight colors
+    output_frame = detect_shapes_and_highlight_colors(frame)
 
     # Display the frame
     cv2.imshow("Camera Feed", output_frame)
