@@ -18,22 +18,17 @@ if picam2 is None:
     print("Exiting program. Camera could not be initialized.")
     exit()
 
-# Function to detect shapes and arrows
 def detect_shapes_and_arrows(frame):
-    # Convert the frame to 3-channel BGR if it has 4 channels (e.g., RGBA)
-    if frame.shape[2] == 4:
-        frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
-
-    # Convert to grayscale and apply edge detection
+    # Convert to grayscale and apply edge detection on full frame
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     edges = cv2.Canny(blurred, 50, 150)
 
-    # Find contours
+    # Find contours for overall shapes
     cnts, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     for c in cnts:
         if cv2.contourArea(c) > 1000:  # Ignore small contours
-            # Approximate the contour
+            # Approximate the contour for shape detection
             epsilon = 0.01 * cv2.arcLength(c, True)
             approx = cv2.approxPolyDP(c, epsilon, True)
 
@@ -42,7 +37,7 @@ def detect_shapes_and_arrows(frame):
             x, y, w, h = cv2.boundingRect(approx)
             cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 0, 0), 2)
 
-            # Detect shapes based on the number of vertices
+            # Determine the basic shape type based on vertices count
             if len(approx) == 3:
                 shape = "Triangle"
             elif len(approx) == 4:
@@ -54,21 +49,38 @@ def detect_shapes_and_arrows(frame):
             else:
                 shape = "Circle"
 
-            # Label the shape
-            cv2.putText(frame, shape, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+            # Process the ROI to detect an arrow inside the shape
+            roi = gray[y:y+h, x:x+w]
+            roi_blur = cv2.GaussianBlur(roi, (5, 5), 0)
+            roi_edges = cv2.Canny(roi_blur, 50, 150)
+            # Apply a morphological closing to join broken edges
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+            roi_closed = cv2.morphologyEx(roi_edges, cv2.MORPH_CLOSE, kernel)
+            roi_cnts, _ = cv2.findContours(roi_closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            arrow_found = False
+            for ac in roi_cnts:
+                if cv2.contourArea(ac) > 300:  # Adjust threshold for arrow details
+                    # Adjust the epsilon factor for finer approximation
+                    epsilon2 = 0.02 * cv2.arcLength(ac, True)
+                    approx2 = cv2.approxPolyDP(ac, epsilon2, True)
+                    # Check if the approximated contour has around 7 vertices
+                    if len(approx2) == 7:
+                        arrow_found = True
+                        # Optionally, draw the arrow contour in a different color
+                        pts = approx2 + [x, y]  # Adjust coordinates relative to full image
+                        cv2.drawContours(frame, [pts], -1, (0, 255, 255), 2)
+                        break
 
-    # Convert the grayscale edges back to BGR (RGB) for display
-    edges_bgr = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
+            # Update label based on arrow detection
+            if arrow_found and shape != "Arrow":
+                label = f"{shape} with Arrow"
+            else:
+                label = shape
 
-    # Ensure edges_bgr has the same dimensions as frame
-    if edges_bgr.shape != frame.shape:
-        edges_bgr = cv2.resize(edges_bgr, (frame.shape[1], frame.shape[0]))
+            cv2.putText(frame, label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
-    # Overlay the edges on the original frame
-    output_frame = cv2.addWeighted(frame, 0.8, edges_bgr, 0.2, 0)
-
-    return output_frame
-
+    return frame
 
 # Main loop
 while True:
@@ -78,7 +90,7 @@ while True:
     # Flip the frame vertically (optional, depending on your camera orientation)
     frame = cv2.flip(frame, -1)
 
-    # Detect shapes and arrows
+    # Detect shapes and search for an arrow inside each shape
     output_frame = detect_shapes_and_arrows(frame)
 
     # Display the frame
