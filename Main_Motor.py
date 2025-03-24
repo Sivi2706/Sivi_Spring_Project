@@ -3,12 +3,12 @@ import time
 import numpy as np
 
 # Define GPIO pins
-IN1, IN2 = 4, 17          # Right motor control
-IN3, IN4 = 27, 22         # Left motor control
-ENA, ENB = 18, 23         # PWM pins for motors
-encoderPinRight = 24      # Right encoder
-encoderPinLeft = 25       # Left encoder
-
+IN1, IN2 = 22, 27         # Left motor control
+IN3, IN4 = 17, 4          # Right motor control
+ENA, ENB = 13, 12         # PWM pins for motors
+encoderPinRight = 23      # Right encoder
+encoderPinLeft =  24      # Left encoder
+ServoMotor = 18           # Servo motor PWM for the camera
 # Constants (to be calibrated)
 WHEEL_DIAMETER = 4.05  # cm
 PULSES_PER_REVOLUTION = 20
@@ -59,14 +59,6 @@ def setup_gpio():
 
 # Movement functions
 def move_forward(right_pwm, left_pwm, speed):
-    GPIO.output(IN1, GPIO.HIGH)
-    GPIO.output(IN2, GPIO.LOW)
-    GPIO.output(IN3, GPIO.HIGH)
-    GPIO.output(IN4, GPIO.LOW)
-    right_pwm.ChangeDutyCycle(speed)
-    left_pwm.ChangeDutyCycle(speed)
-
-def move_backward(right_pwm, left_pwm, speed):
     GPIO.output(IN1, GPIO.LOW)
     GPIO.output(IN2, GPIO.HIGH)
     GPIO.output(IN3, GPIO.LOW)
@@ -74,17 +66,25 @@ def move_backward(right_pwm, left_pwm, speed):
     right_pwm.ChangeDutyCycle(speed)
     left_pwm.ChangeDutyCycle(speed)
 
+def move_backward(right_pwm, left_pwm, speed):
+    GPIO.output(IN1, GPIO.HIGH)
+    GPIO.output(IN2, GPIO.LOW)
+    GPIO.output(IN3, GPIO.HIGH)
+    GPIO.output(IN4, GPIO.LOW)
+    right_pwm.ChangeDutyCycle(speed)
+    left_pwm.ChangeDutyCycle(speed)
+
 def turn_right(right_pwm, left_pwm, speed):
-    GPIO.output(IN1, GPIO.LOW)
-    GPIO.output(IN2, GPIO.HIGH)
+    GPIO.output(IN1, GPIO.HIGH)
+    GPIO.output(IN2, GPIO.LOW)
     GPIO.output(IN3, GPIO.HIGH)
     GPIO.output(IN4, GPIO.LOW)
     right_pwm.ChangeDutyCycle(speed)
     left_pwm.ChangeDutyCycle(speed)
 
 def turn_left(right_pwm, left_pwm, speed):
-    GPIO.output(IN1, GPIO.HIGH)
-    GPIO.output(IN2, GPIO.LOW)
+    GPIO.output(IN1, GPIO.LOW)
+    GPIO.output(IN2, GPIO.HIGH)
     GPIO.output(IN3, GPIO.LOW)
     GPIO.output(IN4, GPIO.HIGH)
     right_pwm.ChangeDutyCycle(speed)
