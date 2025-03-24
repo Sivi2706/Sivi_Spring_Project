@@ -53,8 +53,13 @@ def detect_shapes_and_arrows(frame):
             # Label the shape
             cv2.putText(frame, shape, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
-    return frame
+    # Convert the grayscale edges back to BGR (RGB) for display
+    edges_bgr = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
 
+    # Optionally, you can overlay the edges on the original frame
+    output_frame = cv2.addWeighted(frame, 0.8, edges_bgr, 0.2, 0)
+
+    return output_frame
 # Main loop
 while True:
     # Capture frame from the camera
