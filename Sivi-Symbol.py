@@ -2,50 +2,51 @@ import numpy as np
 import cv2
 import os
 
-
-#Colour detection, Works well for shapes 
-
-
-def detect_color_shapes(frame):
+def detect_color_contours(frame):
     """
-    Detect shapes based on color boundaries and contours
+    Detect contours based on color contrast
     """
-    # Convert to HSV color space for better color segmentation
+    # Convert to HSV for better color segmentation
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     
-    # List to store unique colors and their masks
+    # Convert to grayscale for edge detection
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    
+    # Color ranges to detect
     color_ranges = [
-        # White
-        ((0, 0, 200), (180, 30, 255), (255, 255, 255), "White"),
-        # Blue
-        ((90, 50, 50), (130, 255, 255), (255, 0, 0), "Blue"),
-        # Red (split into two ranges due to hue wrap-around)
-        ((0, 100, 100), (10, 255, 255), (0, 0, 255), "Red"),
-        ((160, 100, 100), (180, 255, 255), (0, 0, 255), "Red"),
-        # Green
-        ((40, 50, 50), (80, 255, 255), (0, 255, 0), "Green"),
+        ((0, 0, 200), (180, 30, 255), "White"),
+        ((90, 50, 50), (130, 255, 255), "Blue"),
+        ((0, 100, 100), (10, 255, 255), "Red"),
+        ((160, 100, 100), (180, 255, 255), "Red"),
+        ((40, 50, 50), (80, 255, 255), "Green")
     ]
     
+    # Final frame to draw on
+    output = frame.copy()
+    
     # Process each color range
-    for lower, upper, draw_color, color_name in color_ranges:
-        # Create mask for specific color range
+    for lower, upper, color_name in color_ranges:
+        # Create color mask
         mask = cv2.inRange(hsv, np.array(lower), np.array(upper))
         
-        # Find contours in the mask
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # Apply edge detection on color mask
+        edges = cv2.Canny(mask, 30, 200)
+        
+        # Find contours
+        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
         # Process each contour
         for c in contours:
             # Filter out small contours
             if cv2.contourArea(c) > 500:
+                # Approximate the contour
+                perimeter = cv2.arcLength(c, True)
+                approx = cv2.approxPolyDP(c, 0.04 * perimeter, True)
+                
                 # Get bounding rectangle
-                x, y, w, h = cv2.boundingRect(c)
+                x, y, w, h = cv2.boundingRect(approx)
                 
-                # Determine shape approximation
-                epsilon = 0.04 * cv2.arcLength(c, True)
-                approx = cv2.approxPolyDP(c, epsilon, True)
-                
-                # Determine shape name
+                # Determine shape
                 shape = "Unknown"
                 if len(approx) == 3:
                     shape = "Triangle"
@@ -56,19 +57,29 @@ def detect_color_shapes(frame):
                 elif len(approx) >= 6:
                     shape = "Circle/Irregular"
                 
-                # Draw contour
-                cv2.drawContours(frame, [c], -1, draw_color, 2)
+                # Extract ROI
+                roi = frame[y:y+h, x:x+w]
                 
-                # Label shape and color
+                # Detect symbol in ROI
+                symbol = detect_symbol(roi)
+                
+                # Draw contour
+                cv2.drawContours(output, [c], -1, (0, 255, 0), 2)
+                
+                # Prepare label
                 label = f"{color_name} {shape}"
-                cv2.putText(frame, label, (x, y - 10), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
+                if symbol:
+                    label += f": {symbol}"
+                
+                # Put text
+                cv2.putText(output, label, (x, y - 10), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
     
-    return frame
+    return output
 
-def analyze_shape_interior(roi):
+def detect_symbol(roi):
     """
-    Analyze the interior of a shape for symbols
+    Detect symbols within a region of interest
     """
     # Convert to grayscale and resize
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
@@ -79,7 +90,7 @@ def analyze_shape_interior(roi):
                                    cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
                                    cv2.THRESH_BINARY_INV, 11, 2)
     
-    # Detect symbols (reuse previous symbol detection logic)
+    # Arrow detection
     def detect_directional_arrow():
         height, width = binary.shape
         
@@ -96,7 +107,7 @@ def analyze_shape_interior(roi):
                 return f"{direction} Arrow"
         return None
     
-    # Additional symbol detection methods (traffic light, stop sign, etc.)
+    # Traffic light detection
     def detect_traffic_light():
         height, width = binary.shape
         vertical_strip = binary[:, width//2-10:width//2+10]
@@ -106,10 +117,47 @@ def analyze_shape_interior(roi):
         
         return "Traffic Light" if active_sections >= 2 else None
     
+    # Stop sign detection
+    def detect_stop_sign():
+        height, width = binary.shape
+        
+        # Create circular mask
+        mask = np.zeros((height, width), dtype=np.uint8)
+        cv2.circle(mask, (width//2, height//2), min(height, width)//2, 255, -1)
+        
+        # Apply mask
+        masked = cv2.bitwise_and(binary, mask)
+        
+        # Check for circular shape with high white percentage
+        circle_white_percent = np.sum(masked == 255) / np.sum(mask == 255) * 100
+        
+        return "Stop Sign" if circle_white_percent > 50 else None
+    
+    # Hand stop detection
+    def detect_hand_stop():
+        height, width = binary.shape
+        palm_region = binary[height//3:2*height//3, width//3:2*width//3]
+        
+        # Check for palm-like region characteristics
+        white_percent = np.sum(palm_region == 255) / palm_region.size * 100
+        return "Hand Stop" if white_percent > 40 else None
+    
+    # Face recognition detection
+    def detect_face_recognition():
+        height, width = binary.shape
+        face_region = binary[height//4:3*height//4, width//4:3*width//4]
+        
+        # Check for face-like region characteristics
+        white_percent = np.sum(face_region == 255) / face_region.size * 100
+        return "Face Recognition" if white_percent > 30 else None
+    
     # Run detections
     detections = [
         detect_directional_arrow(),
-        detect_traffic_light()
+        detect_traffic_light(),
+        detect_stop_sign(),
+        detect_hand_stop(),
+        detect_face_recognition()
     ]
     
     # Return first non-None detection
@@ -138,7 +186,7 @@ def main():
         
         if frame is not None:
             # Process the image
-            output = detect_color_shapes(frame)
+            output = detect_color_contours(frame)
             
             # Show the processed image
             cv2.imshow(f"Processed: {image_name}", output)
