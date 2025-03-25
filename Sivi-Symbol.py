@@ -2,6 +2,10 @@ import numpy as np
 import cv2
 import os
 
+
+#Colour detection, Works well for shapes 
+
+
 def detect_color_shapes(frame):
     """
     Detect shapes based on color boundaries and contours
