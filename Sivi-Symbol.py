@@ -2,14 +2,72 @@ import numpy as np
 import cv2
 import os
 
-def preprocess_roi(roi):
+def detect_color_shapes(frame):
     """
-    Preprocess region of interest for better analysis
+    Detect shapes based on color boundaries and contours
     """
-    # Convert to grayscale
-    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    # Convert to HSV color space for better color segmentation
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     
-    # Resize consistently
+    # List to store unique colors and their masks
+    color_ranges = [
+        # White
+        ((0, 0, 200), (180, 30, 255), (255, 255, 255), "White"),
+        # Blue
+        ((90, 50, 50), (130, 255, 255), (255, 0, 0), "Blue"),
+        # Red (split into two ranges due to hue wrap-around)
+        ((0, 100, 100), (10, 255, 255), (0, 0, 255), "Red"),
+        ((160, 100, 100), (180, 255, 255), (0, 0, 255), "Red"),
+        # Green
+        ((40, 50, 50), (80, 255, 255), (0, 255, 0), "Green"),
+    ]
+    
+    # Process each color range
+    for lower, upper, draw_color, color_name in color_ranges:
+        # Create mask for specific color range
+        mask = cv2.inRange(hsv, np.array(lower), np.array(upper))
+        
+        # Find contours in the mask
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        # Process each contour
+        for c in contours:
+            # Filter out small contours
+            if cv2.contourArea(c) > 500:
+                # Get bounding rectangle
+                x, y, w, h = cv2.boundingRect(c)
+                
+                # Determine shape approximation
+                epsilon = 0.04 * cv2.arcLength(c, True)
+                approx = cv2.approxPolyDP(c, epsilon, True)
+                
+                # Determine shape name
+                shape = "Unknown"
+                if len(approx) == 3:
+                    shape = "Triangle"
+                elif len(approx) == 4:
+                    shape = "Quadrilateral"
+                elif len(approx) == 5:
+                    shape = "Pentagon"
+                elif len(approx) >= 6:
+                    shape = "Circle/Irregular"
+                
+                # Draw contour
+                cv2.drawContours(frame, [c], -1, draw_color, 2)
+                
+                # Label shape and color
+                label = f"{color_name} {shape}"
+                cv2.putText(frame, label, (x, y - 10), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
+    
+    return frame
+
+def analyze_shape_interior(roi):
+    """
+    Analyze the interior of a shape for symbols
+    """
+    # Convert to grayscale and resize
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     resized = cv2.resize(gray, (200, 200))
     
     # Apply adaptive thresholding
@@ -17,16 +75,7 @@ def preprocess_roi(roi):
                                    cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
                                    cv2.THRESH_BINARY_INV, 11, 2)
     
-    return binary
-
-def detect_symbol(binary):
-    """
-    Detect specific symbols in the binary image
-    """
-    # Detect white pixels percentage
-    white_percentage = np.sum(binary == 255) / binary.size * 100
-    
-    # Arrow detection
+    # Detect symbols (reuse previous symbol detection logic)
     def detect_directional_arrow():
         height, width = binary.shape
         
@@ -43,120 +92,24 @@ def detect_symbol(binary):
                 return f"{direction} Arrow"
         return None
     
-    # Traffic light detection
+    # Additional symbol detection methods (traffic light, stop sign, etc.)
     def detect_traffic_light():
         height, width = binary.shape
         vertical_strip = binary[:, width//2-10:width//2+10]
         
-        # Check for multiple color regions
         color_sections = np.array_split(vertical_strip, 3)
         active_sections = sum(np.sum(section == 255) > section.size * 0.3 for section in color_sections)
         
         return "Traffic Light" if active_sections >= 2 else None
     
-    # Stop sign detection
-    def detect_stop_sign():
-        height, width = binary.shape
-        
-        # Create circular mask
-        mask = np.zeros((height, width), dtype=np.uint8)
-        cv2.circle(mask, (width//2, height//2), min(height, width)//2, 255, -1)
-        
-        # Apply mask
-        masked = cv2.bitwise_and(binary, mask)
-        
-        # Check for circular shape with high white percentage
-        circle_white_percent = np.sum(masked == 255) / np.sum(mask == 255) * 100
-        
-        return "Stop Sign" if circle_white_percent > 50 else None
-    
-    # Hand stop detection
-    def detect_hand_stop():
-        height, width = binary.shape
-        palm_region = binary[height//3:2*height//3, width//3:2*width//3]
-        
-        # Check for palm-like region characteristics
-        white_percent = np.sum(palm_region == 255) / palm_region.size * 100
-        return "Hand Stop" if white_percent > 40 else None
-    
-    # Face recognition detection
-    def detect_face_recognition():
-        height, width = binary.shape
-        face_region = binary[height//4:3*height//4, width//4:3*width//4]
-        
-        # Check for face-like region characteristics
-        white_percent = np.sum(face_region == 255) / face_region.size * 100
-        return "Face Recognition" if white_percent > 30 else None
-    
     # Run detections
     detections = [
         detect_directional_arrow(),
-        detect_traffic_light(),
-        detect_stop_sign(),
-        detect_hand_stop(),
-        detect_face_recognition()
+        detect_traffic_light()
     ]
     
     # Return first non-None detection
     return next((det for det in detections if det is not None), None)
-
-def detect_shapes_and_symbols(frame):
-    """
-    Detect shapes and analyze their interior
-    """
-    # Convert to grayscale and apply edge detection
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    edges = cv2.Canny(blurred, 30, 200)
-
-    # Find contours
-    cnts, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    for c in cnts:
-        # Filter out small contours
-        if cv2.contourArea(c) > 500:
-            # Approximate the contour
-            perimeter = cv2.arcLength(c, True)
-            approx = cv2.approxPolyDP(c, 0.04 * perimeter, True)
-            
-            # Get bounding rectangle
-            x, y, w, h = cv2.boundingRect(approx)
-            
-            # Determine shape
-            shape = "Unknown"
-            if len(approx) == 3:
-                shape = "Triangle"
-            elif len(approx) == 4:
-                shape = "Quadrilateral"
-            elif len(approx) == 5:
-                shape = "Pentagon"
-            elif len(approx) == 6:
-                shape = "Hexagon"
-            elif len(approx) > 6:
-                shape = "Circle/Irregular"
-            
-            # Extract ROI
-            roi = frame[y:y+h, x:x+w]
-            
-            # Preprocess and detect symbol
-            symbol = None
-            if len(approx) >= 4:  # Focus on quadrilaterals and more complex shapes
-                binary_roi = preprocess_roi(roi)
-                symbol = detect_symbol(binary_roi)
-            
-            # Draw contour
-            cv2.drawContours(frame, [approx], -1, (0, 255, 0), 2)
-            
-            # Label shape and symbol
-            label = f"{shape}"
-            if symbol:
-                label += f": {symbol}"
-            
-            # Put text
-            cv2.putText(frame, label, (x, y - 10), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-    
-    return frame
 
 def main():
     # Load images from the folder
@@ -181,7 +134,7 @@ def main():
         
         if frame is not None:
             # Process the image
-            output = detect_shapes_and_symbols(frame)
+            output = detect_color_shapes(frame)
             
             # Show the processed image
             cv2.imshow(f"Processed: {image_name}", output)
