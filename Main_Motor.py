@@ -9,10 +9,16 @@ ENA, ENB = 13, 12         # PWM pins for motors
 encoderPinRight = 23      # Right encoder
 encoderPinLeft =  24      # Left encoder
 ServoMotor = 18           # Servo motor PWM for the camera
+
 # Constants (to be calibrated)
 WHEEL_DIAMETER = 4.05  # cm
 PULSES_PER_REVOLUTION = 20
 WHEEL_CIRCUMFERENCE = np.pi * WHEEL_DIAMETER  # cm
+
+# Servo motor parameters
+SERVO_MIN_DUTY = 2.5     # Duty cycle for 0 degrees
+SERVO_MAX_DUTY = 12.5    # Duty cycle for 180 degrees
+SERVO_FREQ = 50          # 50Hz frequency for servo
 
 # Variables to store encoder counts
 right_counter = 0
@@ -48,14 +54,31 @@ def setup_gpio():
     GPIO.add_event_detect(encoderPinRight, GPIO.RISING, callback=right_encoder_callback)
     GPIO.add_event_detect(encoderPinLeft, GPIO.RISING, callback=left_encoder_callback)
     
-    # Set up PWM
+    # Set up PWM for motors
     right_pwm = GPIO.PWM(ENA, 1000)  # 1000 Hz frequency
     left_pwm = GPIO.PWM(ENB, 1000)
     
     right_pwm.start(0)
     left_pwm.start(0)
     
-    return right_pwm, left_pwm
+    # Set up PWM for servo
+    GPIO.setup(ServoMotor, GPIO.OUT)
+    servo_pwm = GPIO.PWM(ServoMotor, SERVO_FREQ)
+    servo_pwm.start(0)
+    
+    return right_pwm, left_pwm, servo_pwm
+
+# Function to set servo angle
+def set_servo_angle(servo_pwm, angle):
+    if angle < 0:
+        angle = 0
+    elif angle > 180:
+        angle = 180
+    
+    duty = SERVO_MIN_DUTY + (angle * (SERVO_MAX_DUTY - SERVO_MIN_DUTY) / 180.0)
+    servo_pwm.ChangeDutyCycle(duty)
+    time.sleep(0.3)  # Give servo time to move
+    servo_pwm.ChangeDutyCycle(0)  # Stop sending signal to prevent jitter
 
 # Movement functions
 def move_forward(right_pwm, left_pwm, speed):
@@ -122,7 +145,7 @@ def print_movement_stats():
 # Main loop for manual control
 def manual_control():
     global right_counter, left_counter
-    right_pwm, left_pwm = setup_gpio()
+    right_pwm, left_pwm, servo_pwm = setup_gpio()
     
     print("\n==== Robot Movement Testing Program ====")
     print("Commands:")
@@ -131,6 +154,7 @@ def manual_control():
     print("  r <speed> - Turn right")
     print("  l <speed> - Turn left")
     print("  s - Stop motors")
+    print("  sv <angle> - Set servo angle (0-180)")
     print("  t <time> - Set movement time (seconds)")
     print("  q - Quit")
     
@@ -138,7 +162,7 @@ def manual_control():
     
     try:
         while True:
-            command = input("\nEnter command (f/b/r/l/s/t/q): ").strip().lower()
+            command = input("\nEnter command (f/b/r/l/s/sv/t/q): ").strip().lower()
             
             if command == 'q':
                 break
@@ -154,6 +178,15 @@ def manual_control():
                     print(f"Movement time set to {movement_time:.1f} seconds")
                 except (ValueError, IndexError):
                     print("Invalid time value. Please use format 't <seconds>'")
+                continue
+                
+            if command.startswith('sv '):
+                try:
+                    angle = float(command.split()[1])
+                    set_servo_angle(servo_pwm, angle)
+                    print(f"Servo set to {angle} degrees")
+                except (ValueError, IndexError):
+                    print("Invalid angle value. Please use format 'sv <angle>'")
                 continue
                 
             # For movement commands
@@ -206,6 +239,7 @@ def manual_control():
         print("\nManual control stopped by user.")
     finally:
         stop_motors(right_pwm, left_pwm)
+        servo_pwm.stop()
         GPIO.cleanup()
         print("GPIO cleaned up.")
 
