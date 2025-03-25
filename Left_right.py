@@ -174,8 +174,15 @@ def detect_line(frame):
                 # Draw the centroid
                 cv2.circle(roi, (cx, cy), 5, (255, 0, 0), -1)
                 
-                # Calculate the error (distance from center)
-                error = cx - center_x
+                # Count black pixels on left and right sides of the center line
+                left_side = mask_black[:, :center_x]
+                right_side = mask_black[:, center_x:]
+                
+                left_black_pixels = np.sum(left_side == 255)
+                right_black_pixels = np.sum(right_side == 255)
+                
+                # Calculate dynamic error based on black pixel difference
+                error = (right_black_pixels - left_black_pixels)
                 
                 # Draw line from center to centroid
                 cv2.line(roi, (center_x, cy), (cx, cy), (255, 0, 0), 2)
