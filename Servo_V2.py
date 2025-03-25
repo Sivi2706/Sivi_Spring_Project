@@ -8,9 +8,9 @@ from picamera2 import Picamera2
 IN1, IN2 = 22, 27         # Left motor control
 IN3, IN4 = 17, 4          # Right motor control
 ENA, ENB = 13, 12         # PWM pins for motors ENA=Right ENB=Left
-encoderPinRight = 23      # Right encoder
-encoderPinLeft = 24       # Left encoder
-ServoMotor = 18           # Servo motor PWM for the camera
+encoderPinRight = 23       # Right encoder
+encoderPinLeft = 24        # Left encoder
+ServoMotor = 18            # Servo motor PWM for the camera
 
 # Constants
 WHEEL_DIAMETER = 4.05      # cm
@@ -35,14 +35,17 @@ TURN_THRESHOLD = 80        # Adjust this value based on your needs
 # Recovery parameters
 REVERSE_DURATION = 0.5     # seconds to reverse
 REVERSE_SPEED = 30         # speed when reversing
-SCAN_ANGLES = [45, 135, 90]  # left, right, center (degrees)
+SCAN_ANGLES = [45, 135, 90]  # left, right, center
 SCAN_TIME_PER_ANGLE = 0.5  # seconds per angle
-PIVOT_DURATION = 0.5       # seconds to pivot
-SERVO_STEP = 5             # degrees to move per iteration during realignment
+SERVO_ADJUST_INTERVAL = 0.1  # seconds between servo adjustments
+SERVO_STEP = 5             # degrees to adjust per interval
 
 # Variables to store encoder counts
 right_counter = 0
 left_counter = 0
+
+# Global variable to track servo position
+current_servo_angle = 90
 
 # Encoder callback functions
 def right_encoder_callback(channel):
@@ -90,7 +93,7 @@ def setup_gpio():
 
 # Function to set servo angle
 def set_servo_angle(servo_pwm, angle):
-    # Clamp the angle between 0 and 180
+    global current_servo_angle
     if angle < 0:
         angle = 0
     elif angle > 180:
@@ -99,23 +102,22 @@ def set_servo_angle(servo_pwm, angle):
     duty = SERVO_MIN_DUTY + (angle * (SERVO_MAX_DUTY - SERVO_MIN_DUTY) / 180.0)
     servo_pwm.ChangeDutyCycle(duty)
     time.sleep(0.3)  # Give servo time to move
-    servo_pwm.ChangeDutyCycle(0)  # Stop sending signal to prevent jitter
+    servo_pwm.ChangeDutyCycle(0)  # Prevent jitter
+    current_servo_angle = angle
 
 # Motor control functions
 def pivot_turn_right(right_pwm, left_pwm):
-    # Right wheel backward, left wheel forward
-    GPIO.output(IN1, GPIO.HIGH)   # Left forward
+    GPIO.output(IN1, GPIO.HIGH)
     GPIO.output(IN2, GPIO.LOW)
-    GPIO.output(IN3, GPIO.HIGH)   # Right backward
+    GPIO.output(IN3, GPIO.HIGH)
     GPIO.output(IN4, GPIO.LOW)
     right_pwm.ChangeDutyCycle(TURN_SPEED)
     left_pwm.ChangeDutyCycle(TURN_SPEED)
 
 def pivot_turn_left(right_pwm, left_pwm):
-    # Right wheel forward, left wheel backward
-    GPIO.output(IN1, GPIO.LOW)    # Left backward
+    GPIO.output(IN1, GPIO.LOW)
     GPIO.output(IN2, GPIO.HIGH)
-    GPIO.output(IN3, GPIO.LOW)    # Right forward
+    GPIO.output(IN3, GPIO.LOW)
     GPIO.output(IN4, GPIO.HIGH)
     right_pwm.ChangeDutyCycle(TURN_SPEED)
     left_pwm.ChangeDutyCycle(TURN_SPEED)
@@ -151,194 +153,126 @@ def setup_camera():
     picam2.start()
     return picam2
 
-# Line detection function (using full frame)
+# Line detection function
 def detect_line(frame):
-    # Convert frame to HSV color space
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    
-    # Define specific range for black color detection
     lower_black = np.array([0, 0, 0])
-    upper_black = np.array([180, 255, 120])  # Increased upper V value to include gray
+    upper_black = np.array([180, 255, 120])
     
-    # Create mask for black regions (using full frame)
     mask_black = cv2.inRange(hsv, lower_black, upper_black)
-    
-    # Apply morphological operations to clean up the mask
     kernel = np.ones((5, 5), np.uint8)
     mask_black = cv2.erode(mask_black, kernel, iterations=1)
     mask_black = cv2.dilate(mask_black, kernel, iterations=1)
     
-    # Find contours
     contours, _ = cv2.findContours(mask_black, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    # Draw center reference line
     center_x = FRAME_WIDTH // 2
     cv2.line(frame, (center_x, 0), (center_x, FRAME_HEIGHT), (0, 0, 255), 2)
     
-    # Process contours
     if contours:
-        # Find the largest contour
         largest_contour = max(contours, key=cv2.contourArea)
         area = cv2.contourArea(largest_contour)
         
         if area > MIN_CONTOUR_AREA:
-            # Calculate the moments of the contour
             M = cv2.moments(largest_contour)
-            
-            # Draw the contour
-            cv2.drawContours(frame, [largest_contour], -1, (0, 255, 0), 2)
-            
-            # If moment is valid, calculate centroid
             if M["m00"] != 0:
                 cx = int(M["m10"] / M["m00"])
                 cy = int(M["m01"] / M["m00"])
-                
-                # Draw the centroid
+                cv2.drawContours(frame, [largest_contour], -1, (0, 255, 0), 2)
                 cv2.circle(frame, (cx, cy), 5, (255, 0, 0), -1)
-                
-                # Calculate the error (distance from center)
                 error = cx - center_x
-                
-                # Draw line from center to centroid
                 cv2.line(frame, (center_x, cy), (cx, cy), (255, 0, 0), 2)
-                
-                # Display error value
                 cv2.putText(frame, f"Error: {error}", (10, 30), 
                             cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
-                
                 return error, True
-    
-    # Return zero error if no valid line detected
     return 0, False
 
 # Main function
 def main():
-    # Initialize GPIO and PWM
+    global current_servo_angle
+    
     right_pwm, left_pwm, servo_pwm = setup_gpio()
-    
-    # Initialize camera
     picam2 = setup_camera()
-    
-    # Set servo to center initially
     set_servo_angle(servo_pwm, 90)
     
-    # State variables
     state = "NORMAL"
     reverse_start_time = 0
     current_scan_angle = 0
     scan_start_time = 0
-    detected_error = 0
-    # New variable: keep track of the servo angle when the line was detected in scanning
-    detected_servo_angle = 90  
-    pivot_start_time = 0
+    realigning_start_angle = 90
+    realigning_step = 0
+    realigning_last_adjust = 0
     
     print("Line follower started. Press Ctrl+C to stop.")
     
     try:
         while True:
-            # Capture frame
             frame = picam2.capture_array()
-            
-            # Detect line and check if found
             error, line_found = detect_line(frame)
-            
-            # Display the frame
             cv2.imshow("Line Follower", frame)
             
-            # Exit on 'q' key press
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
             
-            # State machine
             if state == "NORMAL":
                 if line_found:
-                    # Normal line following: use error from center of frame
                     if error > TURN_THRESHOLD:
                         pivot_turn_right(right_pwm, left_pwm)
-                        print("Pivot Turning Right")
                     elif error < -TURN_THRESHOLD:
                         pivot_turn_left(right_pwm, left_pwm)
-                        print("Pivot Turning Left")
                     else:
                         move_forward(right_pwm, left_pwm)
-                        print("Moving Forward")
                 else:
-                    # Line lost, start reversing
-                    print("Line lost. Reversing...")
                     state = "REVERSING"
                     reverse_start_time = time.time()
                     move_backward(right_pwm, left_pwm, REVERSE_SPEED)
             
             elif state == "REVERSING":
                 if time.time() - reverse_start_time >= REVERSE_DURATION:
-                    # Stop reversing and start scanning
                     stop_motors(right_pwm, left_pwm)
-                    print("Scanning for line...")
                     state = "SCANNING"
                     current_scan_angle = 0
-                    # Set servo to first scan angle and record current servo angle
-                    detected_servo_angle = SCAN_ANGLES[current_scan_angle]
-                    set_servo_angle(servo_pwm, detected_servo_angle)
+                    set_servo_angle(servo_pwm, SCAN_ANGLES[current_scan_angle])
                     scan_start_time = time.time()
             
             elif state == "SCANNING":
                 if time.time() - scan_start_time >= SCAN_TIME_PER_ANGLE:
-                    # Check for line at current angle
-                    frame = picam2.capture_array()
-                    error, line_found = detect_line(frame)
                     if line_found:
-                        detected_error = error
-                        print(f"Line found during scan at servo angle {detected_servo_angle}. Error: {detected_error}")
-                        # Instead of immediately recentering the servo, switch to REALIGN
-                        state = "REALIGN"
+                        detected_angle = SCAN_ANGLES[current_scan_angle]
+                        if detected_angle < 90:
+                            pivot_turn_left(right_pwm, left_pwm)
+                            realigning_step = SERVO_STEP
+                        elif detected_angle > 90:
+                            pivot_turn_right(right_pwm, left_pwm)
+                            realigning_step = -SERVO_STEP
+                        else:
+                            state = "NORMAL"
+                            continue
+                        realigning_start_angle = detected_angle
+                        state = "REALIGNING"
+                        realigning_last_adjust = time.time()
                     else:
-                        # Move to next scan angle if available
                         current_scan_angle += 1
                         if current_scan_angle < len(SCAN_ANGLES):
-                            detected_servo_angle = SCAN_ANGLES[current_scan_angle]
-                            set_servo_angle(servo_pwm, detected_servo_angle)
+                            set_servo_angle(servo_pwm, SCAN_ANGLES[current_scan_angle])
                             scan_start_time = time.time()
                         else:
-                            # All angles scanned, no line found: reverse again
-                            print("No line found. Reversing again...")
                             state = "REVERSING"
                             move_backward(right_pwm, left_pwm, REVERSE_SPEED)
                             reverse_start_time = time.time()
             
-            elif state == "REALIGN":
-                # In realignment, we gradually adjust the servo back toward 90° while pivoting.
-                # If the servo angle is less than 90, the line was seen on the left,
-                # so we pivot right (and vice versa).
-                if detected_servo_angle < 90:
-                    # Pivot right and increase servo angle gradually
-                    pivot_turn_right(right_pwm, left_pwm)
-                    detected_servo_angle += SERVO_STEP
-                    if detected_servo_angle > 90:
-                        detected_servo_angle = 90
-                    set_servo_angle(servo_pwm, detected_servo_angle)
-                    print(f"Realigning: Pivoting right. Servo angle now {detected_servo_angle}")
-                elif detected_servo_angle > 90:
-                    # Pivot left and decrease servo angle gradually
-                    pivot_turn_left(right_pwm, left_pwm)
-                    detected_servo_angle -= SERVO_STEP
-                    if detected_servo_angle < 90:
-                        detected_servo_angle = 90
-                    set_servo_angle(servo_pwm, detected_servo_angle)
-                    print(f"Realigning: Pivoting left. Servo angle now {detected_servo_angle}")
-                
-                # Once the servo is centered, stop and resume normal operation.
-                if detected_servo_angle == 90:
-                    stop_motors(right_pwm, left_pwm)
-                    state = "NORMAL"
-                    print("Alignment complete. Resuming normal operation.")
-            
-            # Optionally, you can include a small sleep to help with servo timing.
-            time.sleep(0.1)
+            elif state == "REALIGNING":
+                if time.time() - realigning_last_adjust >= SERVO_ADJUST_INTERVAL:
+                    new_angle = current_servo_angle + realigning_step
+                    if (realigning_step > 0 and new_angle >= 90) or (realigning_step < 0 and new_angle <= 90):
+                        new_angle = 90
+                        stop_motors(right_pwm, left_pwm)
+                        state = "NORMAL"
+                    set_servo_angle(servo_pwm, new_angle)
+                    realigning_last_adjust = time.time()
     
     except KeyboardInterrupt:
         print("\nProgram stopped by user")
     finally:
-        # Cleanup
         stop_motors(right_pwm, left_pwm)
         set_servo_angle(servo_pwm, 90)
         cv2.destroyAllWindows()
