@@ -2,7 +2,6 @@ import cv2
 import numpy as np
 import os
 from picamera2 import Picamera2
-from imutils import resize
 
 def load_single_image_data(data_folder):
     images = []
@@ -26,11 +25,11 @@ def load_single_image_data(data_folder):
         img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
         
         if img is not None:
-            # Resize and add to training data
-            img = resize(img, width=200)  # Match detection size
+            # Resize using OpenCV instead of imutils
+            img = cv2.resize(img, (200, 200))  # Fixed size
             images.append(img)
             labels.append(label)
-            label_dict[label] = symbol_folder  # Store label name
+            label_dict[label] = symbol_folder
             
     return images, labels, label_dict
 
@@ -45,7 +44,7 @@ if not images:
     print(f"No valid training images found in {train_folder}")
     exit()
 
-# Train the model (even with single images)
+# Train the model
 recognizer.train(images, np.array(labels))
 
 # Initialize camera
@@ -54,7 +53,7 @@ config = picam2.create_preview_configuration(main={"size": (640, 480)})
 picam2.configure(config)
 picam2.start()
 
-# Initialize face detector
+# Initialize detector
 detector = cv2.CascadeClassifier(
     cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
 )
@@ -62,36 +61,32 @@ detector = cv2.CascadeClassifier(
 print("Starting recognition. Press 'q' to quit.")
 
 while True:
-    # Capture frame
     frame = picam2.capture_array()
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     
-    # Detect symbols/faces
+    # Detect objects
     detections = detector.detectMultiScale(
         gray,
         scaleFactor=1.05,
         minNeighbors=5,
-        minSize=(50, 50),
-        flags=cv2.CASCADE_SCALE_IMAGE
+        minSize=(50, 50)
     )
     
     for (x, y, w, h) in detections:
-        # Process region of interest
+        # Process ROI with OpenCV resize
         roi = gray[y:y+h, x:x+w]
-        roi = resize(roi, width=200)  # Match training size
+        roi = cv2.resize(roi, (200, 200))  # Match training size
         
-        # Recognize symbol
+        # Predict
         label, confidence = recognizer.predict(roi)
         
         # Draw results
         color = (0, 255, 0) if confidence < 80 else (0, 0, 255)
         cv2.rectangle(frame, (x, y), (x+w, y+h), color, 2)
-        
         text = f"{label_dict.get(label, 'Unknown')} ({confidence:.1f})"
         cv2.putText(frame, text, (x, y-10),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
     
-    # Display output
     cv2.imshow('Symbol Recognition', frame)
     
     if cv2.waitKey(1) == ord('q'):
