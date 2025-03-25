@@ -37,6 +37,9 @@ class AdvancedSymbolDetector:
             print(f"Reference folder {folder_path} not found!")
             return False
 
+        # Clear existing references before processing
+        self.reference_symbols = []
+
         for filename in os.listdir(folder_path):
             if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
                 image_path = os.path.join(folder_path, filename)
@@ -145,11 +148,17 @@ class AdvancedSymbolDetector:
             pickle.dump(self.reference_symbols, f)
 
     def load_references(self, filename="symbol_references_advanced.pkl"):
-        if os.path.exists(filename):
-            with open(filename, 'rb') as f:
-                self.reference_symbols = pickle.load(f)
-            return True
-        return False
+        try:
+            if os.path.exists(filename) and os.path.getsize(filename) > 0:
+                with open(filename, 'rb') as f:
+                    self.reference_symbols = pickle.load(f)
+                return True
+            else:
+                print(f"Reference file {filename} not found or is empty.")
+                return False
+        except (EOFError, pickle.UnpicklingError) as e:
+            print(f"Error loading references: {e}")
+            return False
 
     def process_frame(self, frame):
         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
