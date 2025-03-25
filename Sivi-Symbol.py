@@ -2,83 +2,95 @@ import numpy as np
 import cv2
 import os
 
-def analyze_shape_interior(roi):
+def preprocess_roi(roi):
     """
-    Analyze the interior of a quadrilateral for symbols
+    Preprocess region of interest for better analysis
     """
-    # Convert to grayscale and resize
+    # Convert to grayscale
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    resized = cv2.resize(gray, (100, 100))
     
-    # Apply thresholding
-    _, binary = cv2.threshold(resized, 127, 255, cv2.THRESH_BINARY)
+    # Resize consistently
+    resized = cv2.resize(gray, (200, 200))
     
-    # Detect interior features
+    # Apply adaptive thresholding
+    binary = cv2.adaptiveThreshold(resized, 255, 
+                                   cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                   cv2.THRESH_BINARY_INV, 11, 2)
     
-    # 1. Arrow Detection
-    def detect_arrow():
-        # Check for arrow-like features in different orientations
-        directions = {
-            'up': binary[:30, 35:65],
-            'down': binary[70:, 35:65],
-            'left': binary[35:65, :30],
-            'right': binary[35:65, 70:]
+    return binary
+
+def detect_symbol(binary):
+    """
+    Detect specific symbols in the binary image
+    """
+    # Detect white pixels percentage
+    white_percentage = np.sum(binary == 255) / binary.size * 100
+    
+    # Arrow detection
+    def detect_directional_arrow():
+        height, width = binary.shape
+        
+        # Check different arrow regions
+        regions = {
+            'Up': binary[:height//3, width//3:2*width//3],
+            'Down': binary[2*height//3:, width//3:2*width//3],
+            'Left': binary[height//3:2*height//3, :width//3],
+            'Right': binary[height//3:2*height//3, 2*width//3:]
         }
         
-        for direction, region in directions.items():
-            if np.sum(region == 255) > 50:
-                return f"{direction.capitalize()} Arrow"
+        for direction, region in regions.items():
+            if np.sum(region == 255) > region.size * 0.3:
+                return f"{direction} Arrow"
         return None
     
-    # 2. Traffic Light Detection
+    # Traffic light detection
     def detect_traffic_light():
-        # Look for vertical strip with multiple color-like regions
-        vertical_strip = binary[:, 45:55]
-        color_regions = np.sum(vertical_strip == 255, axis=0)
+        height, width = binary.shape
+        vertical_strip = binary[:, width//2-10:width//2+10]
         
-        if len(color_regions) > 2:
-            return "Traffic Light"
-        return None
+        # Check for multiple color regions
+        color_sections = np.array_split(vertical_strip, 3)
+        active_sections = sum(np.sum(section == 255) > section.size * 0.3 for section in color_sections)
+        
+        return "Traffic Light" if active_sections >= 2 else None
     
-    # 3. Stop Sign Detection
+    # Stop sign detection
     def detect_stop_sign():
-        # Check for circular shape with white bar
-        circle_mask = np.zeros_like(binary)
-        cv2.circle(circle_mask, (50, 50), 40, 255, -1)
+        height, width = binary.shape
         
-        # Check overlap of circle and binary image
-        masked = cv2.bitwise_and(binary, circle_mask)
+        # Create circular mask
+        mask = np.zeros((height, width), dtype=np.uint8)
+        cv2.circle(mask, (width//2, height//2), min(height, width)//2, 255, -1)
         
-        # Check for white bar in middle
-        mid_row = masked[50, :]
-        white_pixels = np.sum(mid_row == 255)
+        # Apply mask
+        masked = cv2.bitwise_and(binary, mask)
         
-        if white_pixels > 30:
-            return "Stop Sign"
-        return None
+        # Check for circular shape with high white percentage
+        circle_white_percent = np.sum(masked == 255) / np.sum(mask == 255) * 100
+        
+        return "Stop Sign" if circle_white_percent > 50 else None
     
-    # 4. Hand Stop Detection
+    # Hand stop detection
     def detect_hand_stop():
-        # Look for palm-like region
-        palm_region = binary[50:80, 30:70]
+        height, width = binary.shape
+        palm_region = binary[height//3:2*height//3, width//3:2*width//3]
         
-        # Check for distinct hand shape
-        if np.sum(palm_region == 255) > 800:
-            return "Hand Stop"
-        return None
+        # Check for palm-like region characteristics
+        white_percent = np.sum(palm_region == 255) / palm_region.size * 100
+        return "Hand Stop" if white_percent > 40 else None
     
-    # 5. Face Recognition Detection
+    # Face recognition detection
     def detect_face_recognition():
-        # Look for head-like shape with detection markers
-        head_region = binary[20:50, 30:70]
+        height, width = binary.shape
+        face_region = binary[height//4:3*height//4, width//4:3*width//4]
         
-        if np.sum(head_region == 255) > 400:
-            return "Face Recognition"
-        return None
+        # Check for face-like region characteristics
+        white_percent = np.sum(face_region == 255) / face_region.size * 100
+        return "Face Recognition" if white_percent > 30 else None
     
-    # Run detection methods
+    # Run detections
     detections = [
-        detect_arrow(),
+        detect_directional_arrow(),
         detect_traffic_light(),
         detect_stop_sign(),
         detect_hand_stop(),
@@ -86,11 +98,7 @@ def analyze_shape_interior(roi):
     ]
     
     # Return first non-None detection
-    for detection in detections:
-        if detection:
-            return detection
-    
-    return None
+    return next((det for det in detections if det is not None), None)
 
 def detect_shapes_and_symbols(frame):
     """
@@ -99,20 +107,22 @@ def detect_shapes_and_symbols(frame):
     # Convert to grayscale and apply edge detection
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    edges = cv2.Canny(blurred, 50, 150)
+    edges = cv2.Canny(blurred, 30, 200)
 
     # Find contours
     cnts, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     for c in cnts:
-        if cv2.contourArea(c) > 1000:  # Ignore small contours
+        # Filter out small contours
+        if cv2.contourArea(c) > 500:
             # Approximate the contour
-            epsilon = 0.04 * cv2.arcLength(c, True)
-            approx = cv2.approxPolyDP(c, epsilon, True)
+            perimeter = cv2.arcLength(c, True)
+            approx = cv2.approxPolyDP(c, 0.04 * perimeter, True)
             
+            # Get bounding rectangle
             x, y, w, h = cv2.boundingRect(approx)
             
-            # Determine basic shape
+            # Determine shape
             shape = "Unknown"
             if len(approx) == 3:
                 shape = "Triangle"
@@ -122,24 +132,29 @@ def detect_shapes_and_symbols(frame):
                 shape = "Pentagon"
             elif len(approx) == 6:
                 shape = "Hexagon"
-            else:
+            elif len(approx) > 6:
                 shape = "Circle/Irregular"
             
             # Extract ROI
             roi = frame[y:y+h, x:x+w]
             
-            # Special focus on quadrilaterals
+            # Preprocess and detect symbol
             symbol = None
-            if shape == "Quadrilateral":
-                symbol = analyze_shape_interior(roi)
+            if len(approx) >= 4:  # Focus on quadrilaterals and more complex shapes
+                binary_roi = preprocess_roi(roi)
+                symbol = detect_symbol(binary_roi)
             
-            # Draw contour and label
+            # Draw contour
             cv2.drawContours(frame, [approx], -1, (0, 255, 0), 2)
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 0, 0), 2)
             
-            # Combine shape and symbol information
-            label = f"{shape}: {symbol}" if symbol else shape
-            cv2.putText(frame, label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+            # Label shape and symbol
+            label = f"{shape}"
+            if symbol:
+                label += f": {symbol}"
+            
+            # Put text
+            cv2.putText(frame, label, (x, y - 10), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
     
     return frame
 
@@ -147,8 +162,17 @@ def main():
     # Load images from the folder
     symbol_folder = "Symbol-images"
     
+    # Ensure folder exists
+    if not os.path.exists(symbol_folder):
+        print(f"Folder {symbol_folder} not found!")
+        return
+    
     # Process test images
     test_images = [f for f in os.listdir(symbol_folder) if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif'))]
+    
+    if not test_images:
+        print(f"No images found in {symbol_folder}")
+        return
     
     for image_name in test_images:
         # Read the image
