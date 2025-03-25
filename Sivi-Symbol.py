@@ -1,90 +1,158 @@
 import numpy as np
 import cv2
+import os
 from picamera2 import Picamera2
+import pickle
 
-# Initialize Raspberry Pi Camera
-def initialize_camera():
-    try:
-        picam2 = Picamera2()
-        picam2.configure(picam2.create_preview_configuration(main={"size": (640, 480)}))
-        picam2.start()
-        return picam2
-    except RuntimeError as e:
-        print(f"Camera initialization failed: {e}")
-        return None
+class SymbolDetector:
+    def __init__(self):
+        self.reference_symbols = []
+        self.min_contour_area = 500
+        self.match_threshold = 0.15  # Lower is better match
+        self.initialize_camera()
 
-def detect_color_edges(frame):
-    """
-    Highlight edges of color contrasts in the image with bright outlines
-    """
-    # Convert to HSV for better color segmentation
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    
-    # Color ranges to detect (HSV ranges) with brighter BGR colors for outlines
-    color_ranges = [
-        ((0, 0, 200), (180, 30, 255), "White", (255, 255, 255)),   # White
-        ((90, 50, 50), (130, 255, 255), "Blue", (255, 0, 0)),      # Blue
-        ((0, 100, 100), (10, 255, 255), "Red", (0, 0, 255)),       # Red (lower range)
-        ((160, 100, 100), (180, 255, 255), "Red", (0, 0, 255)),    # Red (upper range)
-        ((40, 50, 50), (80, 255, 255), "Green", (0, 255, 0))       # Green
-    ]
-    
-    # Create a black canvas for edges
-    edge_display = np.zeros_like(frame)
-    
-    # Process each color range
-    for lower, upper, color_name, color_bgr in color_ranges:
-        # Create color mask
-        mask = cv2.inRange(hsv, np.array(lower), np.array(upper))
+    def initialize_camera(self):
+        try:
+            self.picam2 = Picamera2()
+            self.picam2.configure(self.picam2.create_preview_configuration(main={"size": (640, 480)}))
+            self.picam2.start()
+        except RuntimeError as e:
+            print(f"Camera initialization failed: {e}")
+            exit()
+
+    def process_reference_images(self, folder_path="Symbol-images"):
+        if not os.path.exists(folder_path):
+            print(f"Reference folder {folder_path} not found!")
+            return False
+
+        for filename in os.listdir(folder_path):
+            if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+                image_path = os.path.join(folder_path, filename)
+                frame = cv2.imread(image_path)
+                
+                if frame is not None:
+                    # Get symbol name without extension
+                    symbol_name = os.path.splitext(filename)[0]
+                    
+                    # Process the reference image
+                    edges, contours = self.detect_edges(frame)
+                    
+                    if contours:
+                        # Store the largest contour
+                        largest_contour = max(contours, key=cv2.contourArea)
+                        self.reference_symbols.append({
+                            'name': symbol_name,
+                            'contour': largest_contour,
+                            'shape': self.determine_shape(largest_contour)
+                        })
+                        print(f"Loaded reference: {symbol_name}")
         
-        # Clean up the mask with morphological operations
+        if not self.reference_symbols:
+            print("No valid reference images found!")
+            return False
+        
+        # Save references for future use
+        self.save_references()
+        return True
+
+    def detect_edges(self, frame):
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        
+        # Combined color ranges for better edge detection
+        lower = np.array([0, 50, 50])
+        upper = np.array([180, 255, 255])
+        mask = cv2.inRange(hsv, lower, upper)
+        
+        # Clean up the mask
         kernel = np.ones((3,3), np.uint8)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=2)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
         
-        # Find edges using Canny (with lower thresholds for more edges)
+        # Edge detection
         edges = cv2.Canny(mask, 30, 100)
-        
-        # Dilate edges to make them thicker and more visible
         edges = cv2.dilate(edges, kernel, iterations=1)
         
-        # Convert edges to color and add to display
-        colored_edges = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
-        colored_edges[np.where((colored_edges == [255, 255, 255]).all(axis=2))] = color_bgr
-        edge_display = cv2.add(edge_display, colored_edges)
-    
-    # Combine original with edges (more emphasis on edges)
-    output = cv2.addWeighted(frame, 0.5, edge_display, 0.8, 0)
-    
-    return output
+        # Find contours
+        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        return edges, [c for c in contours if cv2.contourArea(c) > self.min_contour_area]
 
-# Main program
-picam2 = initialize_camera()
-if picam2 is None:
-    print("Exiting program. Camera could not be initialized.")
-    exit()
-
-try:
-    while True:
-        # Capture frame from the camera
-        frame = picam2.capture_array()
+    def determine_shape(self, contour):
+        epsilon = 0.02 * cv2.arcLength(contour, True)
+        approx = cv2.approxPolyDP(contour, epsilon, True)
         
-        # Convert from RGB to BGR (OpenCV uses BGR by default)
+        if len(approx) == 3:
+            return "Triangle"
+        elif len(approx) == 4:
+            return "Rectangle"
+        elif len(approx) == 5:
+            return "Pentagon"
+        elif len(approx) >= 6:
+            return "Circle"
+        return "Unknown"
+
+    def match_contour(self, contour):
+        for ref in self.reference_symbols:
+            # Compare shapes using Hu moments
+            match_value = cv2.matchShapes(ref['contour'], contour, cv2.CONTOURS_MATCH_I2, 0)
+            if match_value < self.match_threshold:
+                return ref['name']
+        return None
+
+    def save_references(self, filename="symbol_references.pkl"):
+        with open(filename, 'wb') as f:
+            pickle.dump(self.reference_symbols, f)
+
+    def load_references(self, filename="symbol_references.pkl"):
+        if os.path.exists(filename):
+            with open(filename, 'rb') as f:
+                self.reference_symbols = pickle.load(f)
+            return True
+        return False
+
+    def process_frame(self, frame):
+        # Convert from RGB to BGR
         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
         
-        # Flip the frame vertically if needed (depends on your camera orientation)
-        # frame = cv2.flip(frame, -1)
+        # Detect edges and contours
+        edges, contours = self.detect_edges(frame)
         
-        # Process the frame with our color edge detection
-        output_frame = detect_color_edges(frame)
+        # Draw edges (semi-transparent)
+        edge_display = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
+        output = cv2.addWeighted(frame, 0.7, edge_display, 0.3, 0)
         
-        # Display the frame
-        cv2.imshow("Color Edge Detection", output_frame)
+        # Check each contour against references
+        for contour in contours:
+            matched_name = self.match_contour(contour)
+            if matched_name:
+                # Draw bounding box and label
+                x, y, w, h = cv2.boundingRect(contour)
+                cv2.rectangle(output, (x, y), (x+w, y+h), (0, 255, 0), 2)
+                cv2.putText(output, matched_name, (x, y-10), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
         
-        # Exit on 'q' key press
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
-finally:
-    # Cleanup
-    cv2.destroyAllWindows()
-    picam2.stop()
+        return output
+
+    def run(self):
+        # Try to load saved references first
+        if not self.load_references():
+            # If no saved references, process the images
+            if not self.process_reference_images():
+                print("No reference data available. Exiting.")
+                return
+
+        print("Starting live detection. Press 'q' to quit.")
+        try:
+            while True:
+                frame = self.picam2.capture_array()
+                output = self.process_frame(frame)
+                cv2.imshow('Symbol Detection', output)
+                
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
+        finally:
+            cv2.destroyAllWindows()
+            self.picam2.stop()
+
+if __name__ == "__main__":
+    detector = SymbolDetector()
+    detector.run()
