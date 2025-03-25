@@ -2,200 +2,99 @@ import numpy as np
 import cv2
 import os
 
-def detect_circular_arrows(roi):
+def analyze_shape_interior(roi):
     """
-    Detect arrows within a circular region
+    Analyze the interior of a quadrilateral for symbols
     """
     # Convert to grayscale and resize
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     resized = cv2.resize(gray, (100, 100))
     
-    # Apply edge detection
-    edges = cv2.Canny(resized, 50, 150)
+    # Apply thresholding
+    _, binary = cv2.threshold(resized, 127, 255, cv2.THRESH_BINARY)
     
-    # Detect circular shape
-    circles = cv2.HoughCircles(
-        resized, 
-        cv2.HOUGH_GRADIENT, 
-        dp=1, 
-        minDist=50, 
-        param1=50, 
-        param2=30, 
-        minRadius=40, 
-        maxRadius=60
-    )
+    # Detect interior features
     
-    # Check for arrow-like features
-    if circles is not None:
-        # Check for directional arrow within the circle
-        up_arrow = np.sum(edges[20:40, 40:60]) > 100
-        down_arrow = np.sum(edges[60:80, 40:60]) > 100
+    # 1. Arrow Detection
+    def detect_arrow():
+        # Check for arrow-like features in different orientations
+        directions = {
+            'up': binary[:30, 35:65],
+            'down': binary[70:, 35:65],
+            'left': binary[35:65, :30],
+            'right': binary[35:65, 70:]
+        }
         
-        if up_arrow:
-            return "Circular Up Arrow"
-        elif down_arrow:
-            return "Circular Down Arrow"
+        for direction, region in directions.items():
+            if np.sum(region == 255) > 50:
+                return f"{direction.capitalize()} Arrow"
+        return None
     
-    return None
-
-def detect_rectangular_arrows(roi):
-    """
-    Detect arrows within a rectangular region
-    """
-    # Convert to grayscale and resize
-    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    resized = cv2.resize(gray, (100, 100))
+    # 2. Traffic Light Detection
+    def detect_traffic_light():
+        # Look for vertical strip with multiple color-like regions
+        vertical_strip = binary[:, 45:55]
+        color_regions = np.sum(vertical_strip == 255, axis=0)
+        
+        if len(color_regions) > 2:
+            return "Traffic Light"
+        return None
     
-    # Apply edge detection
-    edges = cv2.Canny(resized, 50, 150)
-    
-    # Check for arrow-like features
-    up_arrow = check_directional_arrow(edges, direction='up')
-    down_arrow = check_directional_arrow(edges, direction='down')
-    left_arrow = check_directional_arrow(edges, direction='left')
-    right_arrow = check_directional_arrow(edges, direction='right')
-    
-    if up_arrow:
-        return "Rectangular Up Arrow"
-    elif down_arrow:
-        return "Rectangular Down Arrow"
-    elif left_arrow:
-        return "Rectangular Left Arrow"
-    elif right_arrow:
-        return "Rectangular Right Arrow"
-    
-    return None
-
-def detect_special_symbols(roi):
-    """
-    Detect special symbols with unique characteristics
-    """
-    # Convert to grayscale
-    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    resized = cv2.resize(gray, (100, 100))
-    
-    # Detect stop sign (red circular shape with white bar)
-    stop_sign = detect_stop_sign(resized)
-    if stop_sign:
-        return stop_sign
-    
-    # Detect traffic light
-    traffic_light = detect_traffic_light(resized)
-    if traffic_light:
-        return traffic_light
-    
-    # Detect hand/stop gesture
-    hand_stop = detect_hand_stop(resized)
-    if hand_stop:
-        return hand_stop
-    
-    # Detect facial recognition icon
-    face_recognition = detect_face_recognition(resized)
-    if face_recognition:
-        return face_recognition
-    
-    return None
-
-def detect_stop_sign(gray):
-    """
-    Detect stop sign characteristics
-    """
-    # Look for circular shape with internal white bar
-    _, thresh = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
-    
-    # Check for circular shape
-    edges = cv2.Canny(gray, 50, 150)
-    circles = cv2.HoughCircles(
-        gray, 
-        cv2.HOUGH_GRADIENT, 
-        dp=1, 
-        minDist=50, 
-        param1=50, 
-        param2=30, 
-        minRadius=40, 
-        maxRadius=60
-    )
-    
-    if circles is not None:
-        # Check for white horizontal bar in middle
-        mid_row = thresh[50, :]
+    # 3. Stop Sign Detection
+    def detect_stop_sign():
+        # Check for circular shape with white bar
+        circle_mask = np.zeros_like(binary)
+        cv2.circle(circle_mask, (50, 50), 40, 255, -1)
+        
+        # Check overlap of circle and binary image
+        masked = cv2.bitwise_and(binary, circle_mask)
+        
+        # Check for white bar in middle
+        mid_row = masked[50, :]
         white_pixels = np.sum(mid_row == 255)
         
-        if white_pixels > 50:
+        if white_pixels > 30:
             return "Stop Sign"
+        return None
+    
+    # 4. Hand Stop Detection
+    def detect_hand_stop():
+        # Look for palm-like region
+        palm_region = binary[50:80, 30:70]
+        
+        # Check for distinct hand shape
+        if np.sum(palm_region == 255) > 800:
+            return "Hand Stop"
+        return None
+    
+    # 5. Face Recognition Detection
+    def detect_face_recognition():
+        # Look for head-like shape with detection markers
+        head_region = binary[20:50, 30:70]
+        
+        if np.sum(head_region == 255) > 400:
+            return "Face Recognition"
+        return None
+    
+    # Run detection methods
+    detections = [
+        detect_arrow(),
+        detect_traffic_light(),
+        detect_stop_sign(),
+        detect_hand_stop(),
+        detect_face_recognition()
+    ]
+    
+    # Return first non-None detection
+    for detection in detections:
+        if detection:
+            return detection
     
     return None
-
-def detect_traffic_light(gray):
-    """
-    Detect traffic light characteristics
-    """
-    # Look for vertical strip with multiple color regions
-    _, thresh = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
-    
-    # Check for vertical strip
-    vertical_strip = thresh[:, 45:55]
-    
-    # Look for multiple color-like regions
-    color_regions = np.sum(vertical_strip == 255, axis=0)
-    
-    if len(color_regions) > 2:
-        return "Traffic Light"
-    
-    return None
-
-def detect_hand_stop(gray):
-    """
-    Detect hand stop gesture
-    """
-    # Look for hand-like shape
-    _, thresh = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
-    
-    # Check for palm-like region
-    palm_region = thresh[50:80, 30:70]
-    
-    # Look for distinct hand shape characteristics
-    if np.sum(palm_region == 255) > 1000:
-        return "Hand Stop"
-    
-    return None
-
-def detect_face_recognition(gray):
-    """
-    Detect face recognition icon characteristics
-    """
-    # Look for head-like shape with detection markers
-    _, thresh = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
-    
-    # Check for head-like region
-    head_region = thresh[20:50, 30:70]
-    
-    # Look for detection marker characteristics
-    if np.sum(head_region == 255) > 500:
-        return "Face Recognition"
-    
-    return None
-
-def check_directional_arrow(edges, direction='up'):
-    """
-    Check for arrow-like features in a specific direction
-    """
-    h, w = edges.shape
-    
-    if direction == 'up':
-        check_region = edges[:h//3, w//4:3*w//4]
-    elif direction == 'down':
-        check_region = edges[2*h//3:, w//4:3*w//4]
-    elif direction == 'left':
-        check_region = edges[h//4:3*h//4, :w//3]
-    elif direction == 'right':
-        check_region = edges[h//4:3*h//4, 2*w//3:]
-    
-    return np.sum(check_region > 0) > 100
 
 def detect_shapes_and_symbols(frame):
     """
-    Detect shapes and symbols with advanced recognition
+    Detect shapes and analyze their interior
     """
     # Convert to grayscale and apply edge detection
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -213,9 +112,6 @@ def detect_shapes_and_symbols(frame):
             
             x, y, w, h = cv2.boundingRect(approx)
             
-            # Extract ROI
-            roi = frame[y:y+h, x:x+w]
-            
             # Determine basic shape
             shape = "Unknown"
             if len(approx) == 3:
@@ -229,20 +125,13 @@ def detect_shapes_and_symbols(frame):
             else:
                 shape = "Circle/Irregular"
             
-            # Advanced symbol recognition
+            # Extract ROI
+            roi = frame[y:y+h, x:x+w]
+            
+            # Special focus on quadrilaterals
             symbol = None
-            
-            # Check for circular arrows
-            if shape == "Circle/Irregular":
-                symbol = detect_circular_arrows(roi)
-            
-            # Check for rectangular arrows
             if shape == "Quadrilateral":
-                symbol = detect_rectangular_arrows(roi)
-            
-            # Check for special symbols
-            if not symbol:
-                symbol = detect_special_symbols(roi)
+                symbol = analyze_shape_interior(roi)
             
             # Draw contour and label
             cv2.drawContours(frame, [approx], -1, (0, 255, 0), 2)
