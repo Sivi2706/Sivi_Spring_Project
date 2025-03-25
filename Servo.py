@@ -30,7 +30,7 @@ FRAME_WIDTH = 640          # Camera frame width
 FRAME_HEIGHT = 480         # Camera frame height
 
 # Threshold for turning
-TURN_THRESHOLD = 80        # Adjust this value based on your needs
+TURN_THRESHOLD = 50        # Adjust this value based on your needs
 
 # Recovery parameters
 REVERSE_DURATION = 0.5     # seconds to reverse
