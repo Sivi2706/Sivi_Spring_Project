@@ -4,7 +4,7 @@ import numpy as np
 import cv2
 from picamera2 import Picamera2
 
-# Define GPIO pins (from Main_Motor.py)
+# Define GPIO pins
 IN1, IN2 = 22, 27         # Left motor control
 IN3, IN4 = 17, 4          # Right motor control
 ENA, ENB = 13, 12         # PWM pins for motors ENA=Right ENB=Left
@@ -12,8 +12,8 @@ encoderPinRight = 23      # Right encoder
 encoderPinLeft = 24       # Left encoder
 ServoMotor = 18           # Servo motor PWM for the camera
 
-# Constants (to be calibrated)
-WHEEL_DIAMETER = 4.05  # cm
+# Constants
+WHEEL_DIAMETER = 4.05     # cm
 PULSES_PER_REVOLUTION = 20
 WHEEL_CIRCUMFERENCE = np.pi * WHEEL_DIAMETER  # cm
 
@@ -22,12 +22,11 @@ right_counter = 0
 left_counter = 0
 
 # Line following parameters
-BASE_SPEED = 50           # Base motor speed (0-100)
+BASE_SPEED = 45           # Base motor speed (0-100)
+TURN_SPEED = 35           # Speed for pivot turns (0-100)
 MIN_CONTOUR_AREA = 1000   # Minimum area for valid contours
 FRAME_WIDTH = 640         # Camera frame width
 FRAME_HEIGHT = 480        # Camera frame height
-ROI_HEIGHT = 150          # Height of region of interest
-ROI_OFFSET = 250          # Offset from bottom of frame
 
 # Threshold for turning
 TURN_THRESHOLD = 50       # Adjust this value based on your needs
@@ -72,37 +71,31 @@ def setup_gpio():
     return right_pwm, left_pwm
 
 # Motor control functions
-def turn_right(right_pwm, left_pwm, speed):
+def pivot_turn_right(right_pwm, left_pwm):
+    # Right wheel backward, left wheel forward
+    GPIO.output(IN1, GPIO.HIGH)   # Left forward
+    GPIO.output(IN2, GPIO.LOW)
+    GPIO.output(IN3, GPIO.HIGH)   # Right backward
+    GPIO.output(IN4, GPIO.LOW)
+    right_pwm.ChangeDutyCycle(TURN_SPEED)
+    left_pwm.ChangeDutyCycle(TURN_SPEED)
+
+def pivot_turn_left(right_pwm, left_pwm):
+    # Right wheel forward, left wheel backward
+    GPIO.output(IN1, GPIO.LOW)    # Left backward
+    GPIO.output(IN2, GPIO.HIGH)
+    GPIO.output(IN3, GPIO.LOW)    # Right forward
+    GPIO.output(IN4, GPIO.HIGH)
+    right_pwm.ChangeDutyCycle(TURN_SPEED)
+    left_pwm.ChangeDutyCycle(TURN_SPEED)
+
+def move_forward(right_pwm, left_pwm):
     GPIO.output(IN1, GPIO.HIGH)
     GPIO.output(IN2, GPIO.LOW)
-    GPIO.output(IN3, GPIO.HIGH)
-    GPIO.output(IN4, GPIO.LOW)
-    right_pwm.ChangeDutyCycle(speed)
-    left_pwm.ChangeDutyCycle(speed)
-
-def turn_left(right_pwm, left_pwm, speed):
-    GPIO.output(IN1, GPIO.LOW)
-    GPIO.output(IN2, GPIO.HIGH)
     GPIO.output(IN3, GPIO.LOW)
     GPIO.output(IN4, GPIO.HIGH)
-    right_pwm.ChangeDutyCycle(speed)
-    left_pwm.ChangeDutyCycle(speed)
-
-def move_forward(right_pwm, left_pwm, speed):
-    GPIO.output(IN1, GPIO.HIGH)
-    GPIO.output(IN2, GPIO.LOW)
-    GPIO.output(IN3, GPIO.LOW)
-    GPIO.output(IN4, GPIO.HIGH)
-    right_pwm.ChangeDutyCycle(speed)
-    left_pwm.ChangeDutyCycle(speed)
-
-def move_backward(right_pwm, left_pwm, speed):
-    GPIO.output(IN1, GPIO.LOW)
-    GPIO.output(IN2, GPIO.HIGH)
-    GPIO.output(IN3, GPIO.HIGH)
-    GPIO.output(IN4, GPIO.LOW)
-    right_pwm.ChangeDutyCycle(speed)
-    left_pwm.ChangeDutyCycle(speed)
+    right_pwm.ChangeDutyCycle(BASE_SPEED)
+    left_pwm.ChangeDutyCycle(BASE_SPEED)
 
 def stop_motors(right_pwm, left_pwm):
     right_pwm.ChangeDutyCycle(0)
@@ -119,7 +112,7 @@ def setup_camera():
     picam2.start()
     return picam2
 
-# Line detection function
+# Line detection function (using full frame)
 def detect_line(frame):
     # Convert frame to HSV color space
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
@@ -128,12 +121,8 @@ def detect_line(frame):
     lower_black = np.array([0, 0, 0])
     upper_black = np.array([180, 255, 120])  # Increased upper V value to include gray
     
-    # Apply ROI (Region of Interest) - only look at the lower portion of the frame
-    roi = frame[FRAME_HEIGHT-ROI_OFFSET:FRAME_HEIGHT-ROI_OFFSET+ROI_HEIGHT, 0:FRAME_WIDTH]
-    roi_hsv = hsv[FRAME_HEIGHT-ROI_OFFSET:FRAME_HEIGHT-ROI_OFFSET+ROI_HEIGHT, 0:FRAME_WIDTH]
-    
-    # Create mask for black regions
-    mask_black = cv2.inRange(roi_hsv, lower_black, upper_black)
+    # Create mask for black regions (using full frame)
+    mask_black = cv2.inRange(hsv, lower_black, upper_black)
     
     # Apply morphological operations to clean up the mask
     kernel = np.ones((5, 5), np.uint8)
@@ -143,16 +132,9 @@ def detect_line(frame):
     # Find contours
     contours, _ = cv2.findContours(mask_black, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
-    # Draw ROI rectangle on original frame
-    cv2.rectangle(frame, 
-                 (0, FRAME_HEIGHT-ROI_OFFSET), 
-                 (FRAME_WIDTH, FRAME_HEIGHT-ROI_OFFSET+ROI_HEIGHT), 
-                 (0, 255, 0), 2)
-    
     # Draw center reference line
     center_x = FRAME_WIDTH // 2
-    cv2.line(frame, (center_x, FRAME_HEIGHT-ROI_OFFSET), 
-             (center_x, FRAME_HEIGHT-ROI_OFFSET+ROI_HEIGHT), (0, 0, 255), 2)
+    cv2.line(frame, (center_x, 0), (center_x, FRAME_HEIGHT), (0, 0, 255), 2)
     
     # Process contours
     if contours:
@@ -164,7 +146,7 @@ def detect_line(frame):
             M = cv2.moments(largest_contour)
             
             # Draw the contour
-            cv2.drawContours(roi, [largest_contour], -1, (0, 255, 0), 2)
+            cv2.drawContours(frame, [largest_contour], -1, (0, 255, 0), 2)
             
             # If moment is valid, calculate centroid
             if M["m00"] != 0:
@@ -172,20 +154,13 @@ def detect_line(frame):
                 cy = int(M["m01"] / M["m00"])
                 
                 # Draw the centroid
-                cv2.circle(roi, (cx, cy), 5, (255, 0, 0), -1)
+                cv2.circle(frame, (cx, cy), 5, (255, 0, 0), -1)
                 
-                # Count black pixels on left and right sides of the center line
-                left_side = mask_black[:, :center_x]
-                right_side = mask_black[:, center_x:]
-                
-                left_black_pixels = np.sum(left_side == 255)
-                right_black_pixels = np.sum(right_side == 255)
-                
-                # Calculate dynamic error based on black pixel difference
-                error = (right_black_pixels - left_black_pixels)
+                # Calculate the error (distance from center)
+                error = cx - center_x
                 
                 # Draw line from center to centroid
-                cv2.line(roi, (center_x, cy), (cx, cy), (255, 0, 0), 2)
+                cv2.line(frame, (center_x, cy), (cx, cy), (255, 0, 0), 2)
                 
                 # Display error value
                 cv2.putText(frame, f"Error: {error}", (10, 30), 
@@ -216,17 +191,17 @@ def main():
             
             # Basic movement logic based on error
             if error > TURN_THRESHOLD:
-                # Turn right
-                turn_right(right_pwm, left_pwm, BASE_SPEED)
-                print("Turning Right")
+                # Pivot turn right
+                pivot_turn_right(right_pwm, left_pwm)
+                print(f"Pivot Turning Right at speed: {TURN_SPEED}")
             elif error < -TURN_THRESHOLD:
-                # Turn left
-                turn_left(right_pwm, left_pwm, BASE_SPEED)
-                print("Turning Left")
+                # Pivot turn left
+                pivot_turn_left(right_pwm, left_pwm)
+                print(f"Pivot Turning Left at speed: {TURN_SPEED}")
             else:
                 # Move forward
-                move_forward(right_pwm, left_pwm, BASE_SPEED)
-                print("Moving Forward")
+                move_forward(right_pwm, left_pwm)
+                print(f"Moving Forward at speed: {BASE_SPEED}")
             
             # Display the frame
             cv2.imshow("Line Follower", frame)
