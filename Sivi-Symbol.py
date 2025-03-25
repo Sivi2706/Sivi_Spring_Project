@@ -2,6 +2,8 @@ import numpy as np
 import cv2
 import os
 
+#WORKING CONTRAST EDGE DETECTION
+
 def detect_color_edges(frame):
     """
     Highlight edges of color contrasts in the image with bright outlines
