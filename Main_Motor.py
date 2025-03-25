@@ -16,9 +16,9 @@ PULSES_PER_REVOLUTION = 20
 WHEEL_CIRCUMFERENCE = np.pi * WHEEL_DIAMETER  # cm
 
 # Servo motor parameters
-SERVO_MIN_DUTY = 2.5     # Duty cycle for 0 degrees
-SERVO_MAX_DUTY = 12.5    # Duty cycle for 180 degrees
-SERVO_FREQ = 50          # 50Hz frequency for servo
+SERVO_CENTER_DUTY = 7.5   # Duty cycle for center position (0 degrees)
+SERVO_RANGE_DUTY = 5.0    # Duty cycle range for ±90 degrees
+SERVO_FREQ = 50           # 50Hz frequency for servo
 
 # Variables to store encoder counts
 right_counter = 0
@@ -65,22 +65,23 @@ def setup_gpio():
     GPIO.setup(ServoMotor, GPIO.OUT)
     servo_pwm = GPIO.PWM(ServoMotor, SERVO_FREQ)
     servo_pwm.start(0)
+    set_servo_angle(servo_pwm, 0)  # Center servo at startup
     
     return right_pwm, left_pwm, servo_pwm
 
-# Function to set servo angle
+# Function to set servo angle (-90 to +90 degrees)
 def set_servo_angle(servo_pwm, angle):
-    if angle < 0:
-        angle = 0
-    elif angle > 180:
-        angle = 180
+    # Constrain angle to -90 to +90 range
+    angle = max(-90, min(90, angle))
     
-    duty = SERVO_MIN_DUTY + (angle * (SERVO_MAX_DUTY - SERVO_MIN_DUTY) / 180.0)
+    # Calculate duty cycle (7.5% center ± 5% range)
+    duty = SERVO_CENTER_DUTY + (angle * (SERVO_RANGE_DUTY / 90.0))
     servo_pwm.ChangeDutyCycle(duty)
     time.sleep(0.3)  # Give servo time to move
     servo_pwm.ChangeDutyCycle(0)  # Stop sending signal to prevent jitter
+    print(f"Servo set to {angle}° (duty cycle: {duty:.1f}%)")
 
-# Movement functions
+# Movement functions (unchanged from previous version)
 def move_forward(right_pwm, left_pwm, speed):
     GPIO.output(IN1, GPIO.HIGH)
     GPIO.output(IN2, GPIO.LOW)
@@ -121,13 +122,13 @@ def stop_motors(right_pwm, left_pwm):
     GPIO.output(IN3, GPIO.LOW)
     GPIO.output(IN4, GPIO.LOW)
 
-# Function to calculate distance
+# Function to calculate distance (unchanged)
 def calculate_distance(encoder_count):
     revolutions = encoder_count / PULSES_PER_REVOLUTION
     distance = revolutions * WHEEL_CIRCUMFERENCE
     return distance
 
-# Print movement stats
+# Print movement stats (unchanged)
 def print_movement_stats():
     global right_counter, left_counter
     
@@ -154,7 +155,7 @@ def manual_control():
     print("  r <speed> - Turn right")
     print("  l <speed> - Turn left")
     print("  s - Stop motors")
-    print("  sv <angle> - Set servo angle (0-180)")
+    print("  sv <angle> - Set servo angle (-90 to +90, 0=center)")
     print("  t <time> - Set movement time (seconds)")
     print("  q - Quit")
     
@@ -184,7 +185,6 @@ def manual_control():
                 try:
                     angle = float(command.split()[1])
                     set_servo_angle(servo_pwm, angle)
-                    print(f"Servo set to {angle} degrees")
                 except (ValueError, IndexError):
                     print("Invalid angle value. Please use format 'sv <angle>'")
                 continue
