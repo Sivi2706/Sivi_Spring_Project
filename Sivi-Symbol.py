@@ -77,11 +77,14 @@ class AdvancedSymbolDetector:
         if des is None:
             return False
 
+        # Convert KeyPoints to picklable format
+        picklable_kp = [(kp.pt, kp.size, kp.angle, kp.response, kp.octave, kp.class_id) for kp in kp]
+
         self.reference_symbols.append({
             'name': symbol_name,
             'contour': largest_contour,
             'shape': shape_type,
-            'keypoints': kp,
+            'keypoints': picklable_kp,
             'descriptors': des
         })
         return True
