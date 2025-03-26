@@ -29,11 +29,8 @@ MIN_CONTOUR_AREA = 1000    # Minimum area for valid contours
 FRAME_WIDTH = 640          # Camera frame width
 FRAME_HEIGHT = 480         # Camera frame height
 
-# 90-degree scan parameters
-TOP_ROI_HEIGHT_RATIO = 0.2  # Top 20% of the frame for special scanning
-
-# Threshold for turning
-TURN_THRESHOLD = 80        # Error threshold for pivoting
+# Threshold for turning (using error from center of ROI)
+TURN_THRESHOLD = 80
 
 # Recovery parameters
 REVERSE_DURATION = 0.5     # Seconds to reverse
@@ -46,6 +43,10 @@ SCAN_TIME_PER_ANGLE = 0.5   # Seconds to wait per scan angle
 # Variables to store encoder counts
 right_counter = 0
 left_counter = 0
+
+# Global flag for upcoming 90° turn detected in top ROI
+upcoming_turn_flag = False
+turn_direction = None  # "LEFT" or "RIGHT"
 
 # Encoder callback functions
 def right_encoder_callback(channel):
@@ -92,7 +93,6 @@ def setup_gpio():
 
 # Function to set servo angle (simple version for scanning and reset)
 def set_servo_angle_simple(servo_pwm, angle):
-    # Constrain angle
     if angle < 0:
         angle = 0
     elif angle > 180:
@@ -104,11 +104,10 @@ def set_servo_angle_simple(servo_pwm, angle):
 
 # New function: use servo tuning logic to perform a turn based on a scanned angle.
 def turn_with_scanned_angle(scanned_angle, servo_pwm, right_pwm, left_pwm):
-    # Calculate turn time: assume 45° turn takes 1 second
+    # Calculate turn time: assume a 45° turn takes 1 second
     turn_time = abs(scanned_angle - 90) / 45.0
     if scanned_angle > 90:
         print(f"Detected angle {scanned_angle}: Pivoting LEFT for {turn_time:.2f} seconds")
-        # For left pivot: right wheel forward, left wheel backward
         GPIO.output(IN1, GPIO.LOW)    # Left backward
         GPIO.output(IN2, GPIO.HIGH)
         GPIO.output(IN3, GPIO.LOW)    # Right forward
@@ -117,7 +116,6 @@ def turn_with_scanned_angle(scanned_angle, servo_pwm, right_pwm, left_pwm):
         left_pwm.ChangeDutyCycle(TURN_SPEED)
     elif scanned_angle < 90:
         print(f"Detected angle {scanned_angle}: Pivoting RIGHT for {turn_time:.2f} seconds")
-        # For right pivot: left wheel forward, right wheel backward
         GPIO.output(IN1, GPIO.HIGH)   # Left forward
         GPIO.output(IN2, GPIO.LOW)
         GPIO.output(IN3, GPIO.HIGH)   # Right backward
@@ -130,7 +128,6 @@ def turn_with_scanned_angle(scanned_angle, servo_pwm, right_pwm, left_pwm):
 
     time.sleep(turn_time)
     stop_motors(right_pwm, left_pwm)
-    # Reset the servo to center
     print("Resetting servo to 90 degrees")
     set_servo_angle_simple(servo_pwm, 90)
 
@@ -183,137 +180,115 @@ def setup_camera():
     picam2.start()
     return picam2
 
-# Modified line detection function:
-# Now returns error, line_found, and intersection flag.
+# Modified line detection function which works on any ROI frame.
+# It returns error, line_found and intersection.
 def detect_line(frame):
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     lower_black = np.array([0, 0, 0])
-    upper_black = np.array([180, 255, 120])  # Include dark gray
+    upper_black = np.array([180, 255, 120])
     mask_black = cv2.inRange(hsv, lower_black, upper_black)
     kernel = np.ones((5, 5), np.uint8)
     mask_black = cv2.erode(mask_black, kernel, iterations=1)
     mask_black = cv2.dilate(mask_black, kernel, iterations=1)
     contours, _ = cv2.findContours(mask_black, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
-    center_x = FRAME_WIDTH // 2
-    cv2.line(frame, (center_x, 0), (center_x, FRAME_HEIGHT), (0, 0, 255), 2)
+    height, width = frame.shape[:2]
+    center_x = width // 2
+    cv2.line(frame, (center_x, 0), (center_x, height), (0, 0, 255), 2)
     
     intersection = False
     if contours:
-        # Filter out contours that are too small
         valid_contours = [cnt for cnt in contours if cv2.contourArea(cnt) > MIN_CONTOUR_AREA]
-        # If two or more valid contours are detected, consider it an intersection.
         if len(valid_contours) >= 2:
             intersection = True
         if valid_contours:
             largest_contour = max(valid_contours, key=cv2.contourArea)
-            area = cv2.contourArea(largest_contour)
             M = cv2.moments(largest_contour)
             cv2.drawContours(frame, [largest_contour], -1, (0, 255, 0), 2)
             if M["m00"] != 0:
                 cx = int(M["m10"] / M["m00"])
-                cy = int(M["m01"] / M["m00"])
-                cv2.circle(frame, (cx, cy), 5, (255, 0, 0), -1)
+                cv2.circle(frame, (cx, height//2), 5, (255, 0, 0), -1)
                 error = cx - center_x
-                cv2.line(frame, (center_x, cy), (cx, cy), (255, 0, 0), 2)
                 cv2.putText(frame, f"Error: {error}", (10, 30),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
                 return error, True, intersection
     return 0, False, intersection
 
-# New function to detect 90-degree path in top ROI
-def detect_90_degree_path(frame):
-    """
-    Detect potential 90-degree path in the top region of the frame
-    Returns boolean indicating if a 90-degree path is detected
-    """
-    # Crop top region of the frame
-    height, width = frame.shape[:2]
-    roi_height = int(height * TOP_ROI_HEIGHT_RATIO)
-    top_roi = frame[:roi_height, :]
-    
-    # Convert to HSV for better color segmentation
-    hsv = cv2.cvtColor(top_roi, cv2.COLOR_BGR2HSV)
-    
-    # Define black color range
-    lower_black = np.array([0, 0, 0])
-    upper_black = np.array([180, 255, 120])
-    
-    # Create mask
-    mask_black = cv2.inRange(hsv, lower_black, upper_black)
-    
-    # Apply morphological operations
-    kernel = np.ones((5, 5), np.uint8)
-    mask_black = cv2.erode(mask_black, kernel, iterations=1)
-    mask_black = cv2.dilate(mask_black, kernel, iterations=1)
-    
-    # Find contours
-    contours, _ = cv2.findContours(mask_black, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    # Filter contours
-    valid_contours = [cnt for cnt in contours if cv2.contourArea(cnt) > MIN_CONTOUR_AREA]
-    
-    # Check for potential 90-degree path
-    if len(valid_contours) >= 2:
-        # Visualize ROI (optional, for debugging)
-        cv2.rectangle(frame, (0, 0), (width, roi_height), (0, 255, 0), 2)
-        return True
-    
-    return False
-
-# Main function
+# Main function with dual ROI logic and updated state machine.
 def main():
+    global upcoming_turn_flag, turn_direction
     right_pwm, left_pwm, servo_pwm = setup_gpio()
     picam2 = setup_camera()
     
     # Center the servo initially
     set_servo_angle_simple(servo_pwm, 90)
     
-    # State variables
+    # State variables: NORMAL, REVERSING, REVERSING_FOR_TURN, TURNING_FOR_FLAG, SCANNING
     state = "NORMAL"
     reverse_start_time = 0
-    ninety_degree_turn_direction = None
     current_scan_index = 0
     scan_start_time = 0
     detected_scan_angle = None
+    last_bottom_error = 0
 
     print("Line follower started. Press 'q' in the display window or Ctrl+C to stop.")
     
     try:
         while True:
             frame = picam2.capture_array()
-            # Existing line detection
-            error, line_found, intersection = detect_line(frame)
+            # Split the frame into top and bottom ROIs
+            top_frame = frame[0:FRAME_HEIGHT//2, :]
+            bottom_frame = frame[FRAME_HEIGHT//2:FRAME_HEIGHT, :]
             
-            # New 90-degree path detection in top ROI
-            ninety_degree_detected = detect_90_degree_path(frame)
+            # Process bottom ROI for line following
+            error_bottom, line_found_bottom, intersection_bottom = detect_line(bottom_frame)
+            last_bottom_error = error_bottom  # Save for possible turn decision
             
+            # Process top ROI for upcoming turn detection
+            error_top, line_found_top, intersection_top = detect_line(top_frame)
+            
+            # For visualization, show the full frame with ROI boundaries drawn
+            cv2.rectangle(frame, (0,0), (FRAME_WIDTH, FRAME_HEIGHT//2), (255, 0, 0), 2)  # Top ROI
+            cv2.rectangle(frame, (0,FRAME_HEIGHT//2), (FRAME_WIDTH, FRAME_HEIGHT), (0, 255, 0), 2)  # Bottom ROI
             cv2.imshow("Line Follower", frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
-            
+
+            # State machine logic
             if state == "NORMAL":
-                if ninety_degree_detected:
-                    print("90-Degree path detected in top ROI!")
-                    # Determine turn direction based on previous state
-                    ninety_degree_turn_direction = "LEFT" if error < 0 else "RIGHT"
-                    state = "NINETY_DEGREE_TURN"
-                
-                elif line_found:
-                    if error > TURN_THRESHOLD:
+                # Update upcoming turn flag: if the top ROI loses the line while bottom still sees it,
+                # we assume a 90° turn is coming.
+                if not line_found_top and line_found_bottom and not upcoming_turn_flag:
+                    upcoming_turn_flag = True
+                    if last_bottom_error < 0:
+                        turn_direction = "LEFT"
+                    elif last_bottom_error > 0:
+                        turn_direction = "RIGHT"
+                    print(f"Upcoming turn detected in top ROI. Setting flag for a {turn_direction} turn.")
+
+                if line_found_bottom:
+                    # Regular line following as before based on error in bottom ROI.
+                    if error_bottom > TURN_THRESHOLD:
                         pivot_turn_right(right_pwm, left_pwm)
-                        print("Pivot Turning Right")
-                    elif error < -TURN_THRESHOLD:
+                        print("Pivot Turning Right (NORMAL)")
+                    elif error_bottom < -TURN_THRESHOLD:
                         pivot_turn_left(right_pwm, left_pwm)
-                        print("Pivot Turning Left")
+                        print("Pivot Turning Left (NORMAL)")
                     else:
                         move_forward(right_pwm, left_pwm)
-                        print("Moving Forward")
+                        print("Moving Forward (NORMAL)")
                 else:
-                    print("Line lost. Reversing...")
-                    state = "REVERSING"
-                    reverse_start_time = time.time()
-                    move_backward(right_pwm, left_pwm, REVERSE_SPEED)
+                    # Bottom ROI lost the line.
+                    if upcoming_turn_flag:
+                        print("Bottom ROI lost line with upcoming turn flag set. Reversing for turn...")
+                        state = "REVERSING_FOR_TURN"
+                        reverse_start_time = time.time()
+                        move_backward(right_pwm, left_pwm, REVERSE_SPEED)
+                    else:
+                        print("Bottom ROI lost line. Reversing for scan...")
+                        state = "REVERSING"
+                        reverse_start_time = time.time()
+                        move_backward(right_pwm, left_pwm, REVERSE_SPEED)
             
             elif state == "REVERSING":
                 if time.time() - reverse_start_time >= REVERSE_DURATION:
@@ -321,20 +296,42 @@ def main():
                     print("Beginning scan for line...")
                     state = "SCANNING"
                     current_scan_index = 0
-                    # Set servo to first scan angle
                     set_servo_angle_simple(servo_pwm, SCAN_ANGLES[current_scan_index])
                     scan_start_time = time.time()
             
+            elif state == "REVERSING_FOR_TURN":
+                if time.time() - reverse_start_time >= REVERSE_DURATION:
+                    stop_motors(right_pwm, left_pwm)
+                    state = "TURNING_FOR_FLAG"
+            
+            elif state == "TURNING_FOR_FLAG":
+                # Use the stored turn_direction flag to execute a turn.
+                turn_time = 1.0  # You can adjust this value as needed.
+                if turn_direction == "LEFT":
+                    print("Executing flagged LEFT turn")
+                    pivot_turn_left(right_pwm, left_pwm)
+                elif turn_direction == "RIGHT":
+                    print("Executing flagged RIGHT turn")
+                    pivot_turn_right(right_pwm, left_pwm)
+                time.sleep(turn_time)
+                stop_motors(right_pwm, left_pwm)
+                # Reset the turn flag after executing the turn.
+                upcoming_turn_flag = False
+                turn_direction = None
+                state = "NORMAL"
+            
             elif state == "SCANNING":
                 if time.time() - scan_start_time >= SCAN_TIME_PER_ANGLE:
-                    frame = picam2.capture_array()
-                    error, line_found, intersection = detect_line(frame)
-                    # Check if an intersection is detected
-                    if intersection:
-                        print("Intersection detected. Centering servo to 90° and adjusting.")
+                    # Check bottom ROI again after moving the servo
+                    bottom_frame = picam2.capture_array()[FRAME_HEIGHT//2:FRAME_HEIGHT, :]
+                    error_bottom, line_found_bottom, intersection_bottom = detect_line(bottom_frame)
+                    
+                    # If an intersection is detected in scan, center and go to NORMAL.
+                    if intersection_bottom:
+                        print("Intersection detected during scan. Resetting servo and returning to NORMAL.")
                         set_servo_angle_simple(servo_pwm, 90)
                         state = "NORMAL"
-                    elif line_found:
+                    elif line_found_bottom:
                         detected_scan_angle = SCAN_ANGLES[current_scan_index]
                         print(f"Line detected during scan at servo angle: {detected_scan_angle}")
                         state = "TURNING"
@@ -354,22 +351,6 @@ def main():
                     turn_with_scanned_angle(detected_scan_angle, servo_pwm, right_pwm, left_pwm)
                 state = "NORMAL"
             
-            elif state == "NINETY_DEGREE_TURN":
-                # Perform a more pronounced turn based on detected direction
-                if ninety_degree_turn_direction == "LEFT":
-                    print("Executing 90-degree LEFT turn")
-                    pivot_turn_left(right_pwm, left_pwm)
-                    time.sleep(1.5)  # Adjust turn duration as needed
-                else:
-                    print("Executing 90-degree RIGHT turn")
-                    pivot_turn_right(right_pwm, left_pwm)
-                    time.sleep(1.5)  # Adjust turn duration as needed
-                
-                # Reset state and prepare for normal line following
-                stop_motors(right_pwm, left_pwm)
-                ninety_degree_turn_direction = None
-                state = "NORMAL"
-    
     except KeyboardInterrupt:
         print("\nProgram stopped by user")
     finally:
