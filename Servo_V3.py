@@ -59,7 +59,7 @@ def setup():
     
     return right_pwm, left_pwm, servo_pwm
 
-def set_servo(pwm, angle):
+def set_servo_angle(pwm, angle):
     global current_angle
     angle = max(0, min(180, angle))
     duty = SERVO_MIN + (angle * (SERVO_MAX - SERVO_MIN) / 180)
@@ -67,36 +67,43 @@ def set_servo(pwm, angle):
     time.sleep(0.3)
     current_angle = angle
 
-# Movement functions remain the same as previous version
-# [Include move_forward, move_backward, turn_right, turn_left, stop_motors from previous code]
-
-def calculate_rotation():
-    right_dist = (right_counter / PULSES_PER_REV) * WHEEL_CIRCUM
-    left_dist = (left_counter / PULSES_PER_REV) * WHEEL_CIRCUM
-    return math.degrees((right_dist - left_dist) / WHEEL_BASE)
-
-def execute_servo_turn(servo, right, left, target):
-    # Move servo to target and back to center
-    set_servo(servo, target)
-    set_servo(servo, 90)
+def move_with_servo_turn(right_pwm, left_pwm, servo_pwm, angle, speed=45):
+    global right_counter, left_counter
     
-    # Calculate required turn
-    angle_diff = 90 - target  # Positive = right turn, Negative = left turn
-    if angle_diff == 0:
-        print("Already centered")
-        return
+    # Reset encoder counters
+    right_counter = 0
+    left_counter = 0
     
+    # Set servo to target angle
+    set_servo_angle(servo_pwm, angle)
+    
+    # Calculate turn degrees
+    angle_diff = 90 - angle  # Positive = right turn, Negative = left turn
+    
+    # Determine turn direction
     direction = 'right' if angle_diff > 0 else 'left'
     degrees = abs(angle_diff)
     
-    # Calculate required encoder counts
+    # Calculate required encoder counts for turn
     arc_length = (degrees * math.pi * WHEEL_BASE) / 360
     counts_needed = int((arc_length / WHEEL_CIRCUM) * PULSES_PER_REV * TURN_RATIO)
     
-    # Execute turn
-    right_counter = left_counter = 0
-    (turn_right if direction == 'right' else turn_left)(right, left, 45)
+    # Set motor directions and PWM
+    if direction == 'right':
+        GPIO.output(IN1, GPIO.HIGH)
+        GPIO.output(IN2, GPIO.LOW)
+        GPIO.output(IN3, GPIO.LOW)
+        GPIO.output(IN4, GPIO.HIGH)
+    else:
+        GPIO.output(IN1, GPIO.LOW)
+        GPIO.output(IN2, GPIO.HIGH)
+        GPIO.output(IN3, GPIO.HIGH)
+        GPIO.output(IN4, GPIO.LOW)
     
+    right_pwm.ChangeDutyCycle(speed)
+    left_pwm.ChangeDutyCycle(speed)
+    
+    # Execute turn
     try:
         while True:
             current = right_counter if direction == 'right' else left_counter
@@ -104,17 +111,21 @@ def execute_servo_turn(servo, right, left, target):
                 break
             time.sleep(0.01)
     finally:
-        stop_motors(right, left)
+        # Stop motors
+        right_pwm.ChangeDutyCycle(0)
+        left_pwm.ChangeDutyCycle(0)
+        GPIO.output([IN1, IN2, IN3, IN4], GPIO.LOW)
+        
+        # Return servo to center
+        set_servo_angle(servo_pwm, 90)
+        
         print(f"Completed {degrees}° {direction} turn")
-        print(f"Actual rotation: {calculate_rotation():.1f}°")
 
 def manual_control():
     right_pwm, left_pwm, servo_pwm = setup()
-    set_servo(servo_pwm, 90)
     
     print("Command Guide:")
-    print("sv X - Set view angle (0-180)")
-    print("f/b/r/l X - Move directions with speed")
+    print("sv X - Set view angle (0-180) and turn")
     print("s - Stop, q - Quit")
     
     try:
@@ -124,22 +135,21 @@ def manual_control():
             if cmd == 'q':
                 break
             elif cmd == 's':
-                stop_motors(right_pwm, left_pwm)
+                right_pwm.ChangeDutyCycle(0)
+                left_pwm.ChangeDutyCycle(0)
+                GPIO.output([IN1, IN2, IN3, IN4], GPIO.LOW)
             elif cmd.startswith('sv '):
                 try:
                     angle = float(cmd.split()[1])
                     if 0 <= angle <= 180:
-                        execute_servo_turn(servo_pwm, right_pwm, left_pwm, angle)
+                        move_with_servo_turn(right_pwm, left_pwm, servo_pwm, angle)
                     else:
                         print("Angle 0-180 only")
-                except:
-                    print("Invalid angle")
-            elif cmd.split()[0] in ['f','b','r','l']:
-                # Movement commands (same as previous)
-                pass
-                
+                except Exception as e:
+                    print(f"Invalid command: {e}")
     finally:
-        stop_motors(right_pwm, left_pwm)
+        right_pwm.stop()
+        left_pwm.stop()
         servo_pwm.stop()
         GPIO.cleanup()
 
