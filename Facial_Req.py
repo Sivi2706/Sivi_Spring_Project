@@ -16,39 +16,36 @@ class SymbolRecognizer:
         for subfolder in os.listdir(self.symbol_dir):
             subfolder_path = os.path.join(self.symbol_dir, subfolder)
             
-            # Ensure it's a directory
             if os.path.isdir(subfolder_path):
-                # Iterate through PNG files in subfolder
                 for filename in os.listdir(subfolder_path):
                     if filename.lower().endswith('.png'):
                         full_path = os.path.join(subfolder_path, filename)
                         
-                        # Load template in color
-                        template = cv2.imread(full_path)
-                        
+                        # Load template in color and convert to HSV
+                        template = cv2.imread(full_path, cv2.IMREAD_COLOR)
                         if template is not None:
-                            # Create symbol name from subfolder and filename
+                            template_hsv = cv2.cvtColor(template, cv2.COLOR_BGR2HSV)
                             symbol_name = f"{subfolder}_{os.path.splitext(filename)[0]}"
-                            self.symbol_templates[symbol_name] = template
-                            print(f"Loaded template: {symbol_name}")
+                            self.symbol_templates[symbol_name] = template_hsv
+                            print(f"Loaded HSV template: {symbol_name}")
         
         if not self.symbol_templates:
             print("No templates found. Exiting.")
             exit()
-        print(f"Loaded {len(self.symbol_templates)} templates.")
+        print(f"Loaded {len(self.symbol_templates)} HSV templates.")
         input("Press Enter to continue...")
 
-    def match_symbol(self, roi):
+    def match_symbol(self, roi_hsv):
         best_match = None
         best_score = float('inf')
         
-        for name, template in self.symbol_templates.items():
+        for name, template_hsv in self.symbol_templates.items():
             try:
                 # Resize template to match ROI dimensions
-                resized_template = cv2.resize(template, (roi.shape[1], roi.shape[0]))
+                resized_template = cv2.resize(template_hsv, (roi_hsv.shape[1], roi_hsv.shape[0]))
                 
-                # Compute template matching with color images
-                result = cv2.matchTemplate(roi, resized_template, cv2.TM_SQDIFF_NORMED)
+                # Perform template matching in HSV space
+                result = cv2.matchTemplate(roi_hsv, resized_template, cv2.TM_SQDIFF_NORMED)
                 _, score, _, _ = cv2.minMaxLoc(result)
                 
                 if score < best_score:
@@ -57,7 +54,7 @@ class SymbolRecognizer:
             except Exception as e:
                 print(f"Error matching template {name}: {e}")
         
-        return best_match if best_score < 0.2 else None
+        return best_match if best_score < 0.25 else None  # Adjusted threshold for HSV
 
 def initialize_camera():
     try:
@@ -70,35 +67,34 @@ def initialize_camera():
         return None
 
 def detect_shapes_and_symbols(frame, symbol_recognizer):
-    # Use red channel for thresholding to avoid grayscale conversion
-    if frame.ndim == 3 and frame.shape[2] >= 3:
-        red_channel = frame[:, :, 2]
-    else:
-        red_channel = frame.copy()
+    # Convert to HSV color space
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     
-    # Thresholding on red channel
-    _, thresh = cv2.threshold(red_channel, 127, 255, cv2.THRESH_BINARY)
+    # Use Value channel for thresholding
+    value_channel = hsv[:, :, 2]
+    
+    # Adaptive thresholding for better light compensation
+    thresh = cv2.adaptiveThreshold(value_channel, 255, 
+                                  cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                  cv2.THRESH_BINARY_INV, 11, 2)
     
     # Find contours
     cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     for c in cnts:
-        # Filter contours by area
         if cv2.contourArea(c) > 500:
-            # Bounding rectangle
             x, y, w, h = cv2.boundingRect(c)
             
-            # Extract ROI from color frame
-            roi = frame[y:y+h, x:x+w]
+            # Extract ROI from HSV image
+            roi_hsv = hsv[y:y+h, x:x+w]
             
-            # Symbol recognition
-            symbol_name = symbol_recognizer.match_symbol(roi)
+            # Symbol recognition in HSV space
+            symbol_name = symbol_recognizer.match_symbol(roi_hsv)
             
-            # Visualize results
+            # Visualization
             cv2.drawContours(frame, [c], -1, (0, 255, 0), 2)
             cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 0, 0), 2)
             
-            # Display recognized symbol
             label = symbol_name if symbol_name else "Unknown Symbol"
             cv2.putText(frame, label, (x, y - 10), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
@@ -106,40 +102,26 @@ def detect_shapes_and_symbols(frame, symbol_recognizer):
     return frame
 
 def main():
-    # Initialize symbol recognizer
     symbol_dir = '/home/raspberry/Documents/S1V1/Sivi_Spring_Project/Symbol-images'
     symbol_recognizer = SymbolRecognizer(symbol_dir)
     
-    # Initialize camera
     picam2 = initialize_camera()
     if picam2 is None:
-        print("Exiting program. Camera could not be initialized.")
         return
 
     try:
-        # Main processing loop
         while True:
-            # Capture frame from the camera
             frame = picam2.capture_array()
-
-            # Flip the frame vertically (optional, depending on camera orientation)
-            frame = cv2.flip(frame, -1)
-
-            # Detect shapes and symbols
+            frame = cv2.flip(frame, -1)  # Adjust based on camera orientation
+            
+            # Process frame with HSV-based detection
             output_frame = detect_shapes_and_symbols(frame, symbol_recognizer)
-
-            # Display the frame
-            cv2.imshow("Camera Feed", output_frame)
-
-            # Exit on 'q' key press
+            
+            cv2.imshow("HSV Symbol Detection", output_frame)
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
 
-    except Exception as e:
-        print(f"An error occurred: {e}")
-
     finally:
-        # Cleanup
         cv2.destroyAllWindows()
         picam2.stop()
 
