@@ -130,7 +130,7 @@ def print_movement_stats():
     print(f"Left Encoder Distance: {left_distance:.2f} cm")
     print(f"Difference: {distance_difference:.2f} cm")
 
-# Modified servo function that turns the car and resets servo position
+# Modified servo function that turns the car in the direction of the specified angle and resets servo position
 def set_servo_angle(servo_pwm, angle, right_pwm, left_pwm):
     # Constrain angle between 0 and 180
     if angle < 0:
@@ -141,31 +141,35 @@ def set_servo_angle(servo_pwm, angle, right_pwm, left_pwm):
     # Move servo to the specified angle
     duty = SERVO_MIN_DUTY + (angle * (SERVO_MAX_DUTY - SERVO_MIN_DUTY) / 180.0)
     servo_pwm.ChangeDutyCycle(duty)
-    time.sleep(0.3)  # Give servo time to move
+    time.sleep(0.3)  # Allow time for servo movement
     servo_pwm.ChangeDutyCycle(0)  # Stop sending signal to prevent jitter
-    
+
     # Calculate turn time based on deviation from center (90°)
-    # Assumption: 45° turn takes 1 second
+    # Assumption: 45° turn takes 1 second.
     turn_time = abs(angle - 90) / 45.0
+
+    # Determine turn direction based on new convention:
+    # 180 (left), 90 (center), 0 (right)
     if angle > 90:
-        print(f"Turning right for {turn_time:.2f} seconds")
-        turn_right(right_pwm, left_pwm, 50)  # Speed can be adjusted as needed
-    elif angle < 90:
         print(f"Turning left for {turn_time:.2f} seconds")
-        turn_left(right_pwm, left_pwm, 50)
+        turn_left(right_pwm, left_pwm, 50)  # Adjust speed as needed
+    elif angle < 90:
+        print(f"Turning right for {turn_time:.2f} seconds")
+        turn_right(right_pwm, left_pwm, 50)
     else:
         print("Angle is 90°, no turning required.")
         return
-    
+
     time.sleep(turn_time)
     stop_motors(right_pwm, left_pwm)
-    
-    # Return servo to 90 degrees
+
+    # Return servo to 90 degrees (center)
     print("Returning servo to 90 degrees")
     duty = SERVO_MIN_DUTY + (90 * (SERVO_MAX_DUTY - SERVO_MIN_DUTY) / 180.0)
     servo_pwm.ChangeDutyCycle(duty)
     time.sleep(0.3)
     servo_pwm.ChangeDutyCycle(0)
+
 
 # Main loop for manual control
 def manual_control():
