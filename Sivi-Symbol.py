@@ -11,27 +11,32 @@ class SymbolRecognizer:
 
     def calibrate(self):
         print("Starting Calibration Stage...")
-        for filename in os.listdir(self.symbol_dir):
-            if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
-                path = os.path.join(self.symbol_dir, filename)
-                template = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
-                if template is not None:
-                    symbol_name = os.path.splitext(filename)[0]
-                    print(f"Calibrating: {symbol_name}")
-                    
-                    # Display each template
-                    cv2.imshow(symbol_name, template)
-                    cv2.waitKey(500)  # Brief display
-                    
-                    # Store template
-                    self.symbol_templates[symbol_name] = template
         
-        cv2.destroyAllWindows()
-        print("Calibration complete. Press 'OK' to continue.")
-        user_input = input("Enter 'OK' to start live feed: ")
-        if user_input.upper() != 'OK':
-            print("Calibration aborted.")
+        # Iterate through subfolders
+        for subfolder in os.listdir(self.symbol_dir):
+            subfolder_path = os.path.join(self.symbol_dir, subfolder)
+            
+            # Ensure it's a directory
+            if os.path.isdir(subfolder_path):
+                # Iterate through PNG files in subfolder
+                for filename in os.listdir(subfolder_path):
+                    if filename.lower().endswith('.png'):
+                        full_path = os.path.join(subfolder_path, filename)
+                        
+                        # Load template
+                        template = cv2.imread(full_path, cv2.IMREAD_GRAYSCALE)
+                        
+                        if template is not None:
+                            # Create symbol name from subfolder and filename
+                            symbol_name = f"{subfolder}_{os.path.splitext(filename)[0]}"
+                            self.symbol_templates[symbol_name] = template
+                            print(f"Loaded template: {symbol_name}")
+        
+        if not self.symbol_templates:
+            print("No templates found. Exiting.")
             exit()
+        print(f"Loaded {len(self.symbol_templates)} templates.")
+        input("Press Enter to continue...")
 
     def match_symbol(self, roi):
         best_match = None
@@ -97,7 +102,7 @@ def detect_shapes_and_symbols(frame, symbol_recognizer):
 
 def main():
     # Initialize symbol recognizer
-    symbol_dir = 'Symbol-images'  # Update with actual path
+    symbol_dir = '/home/raspberry/Documents/S1V1/Sivi_Spring_Project/Symbol-images'
     symbol_recognizer = SymbolRecognizer(symbol_dir)
     
     # Initialize camera
