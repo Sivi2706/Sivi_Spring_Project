@@ -24,7 +24,7 @@ SERVO_FREQ = 50            # 50Hz frequency for servo
 
 # Line following parameters
 BASE_SPEED = 70            # Base motor speed (0-100)
-TURN_SPEED = 90            # Speed for pivot turns (0-100)
+TURN_SPEED = 80            # Speed for pivot turns (0-100)
 MIN_CONTOUR_AREA = 1000    # Minimum area for valid contours
 FRAME_WIDTH = 640          # Camera frame width
 FRAME_HEIGHT = 480         # Camera frame height
