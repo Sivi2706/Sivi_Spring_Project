@@ -7,21 +7,34 @@ from time import sleep
 
 class SymbolDetector:
     def __init__(self):
+        # Adjust thresholds if needed
         self.reference_symbols = []
         self.min_contour_area = 500
         self.match_threshold = 0.2
         self.color_threshold = 75
+
+        # Initialize Picamera2
         self.camera = Picamera2()
-        self.camera.configure(self.camera.create_preview_configuration(main={"size": (640, 480)}))
+        self.camera.configure(
+            self.camera.create_preview_configuration(
+                main={"size": (640, 480)}
+            )
+        )
         self.camera.start()
 
     def capture_image(self):
+        """Captures a frame from the camera and fixes orientation."""
         frame = self.camera.capture_array()
-        return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        # Convert from RGB to BGR
+        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        # Flip if needed; -1 flips both horizontally and vertically
+        frame = cv2.flip(frame, -1)
+        return frame
 
     def process_reference_images(self, folder_path="Symbol-images"):
+        """Load and process all images in the Symbol-images folder."""
         if not os.path.exists(folder_path):
-            print(f"Reference folder {folder_path} not found!")
+            print(f"Reference folder '{folder_path}' not found!")
             return False
 
         for subfolder in os.listdir(folder_path):
@@ -31,13 +44,13 @@ class SymbolDetector:
                     if filename.lower().endswith('.png'):
                         image_path = os.path.join(subfolder_path, filename)
                         frame = cv2.imread(image_path)
-                        
+
                         if frame is not None:
                             symbol_name = subfolder
                             segmented_image = self.fuzzy_color_segmentation(frame)
                             edges, contours = self.detect_edges(segmented_image)
                             feature_vector = self.encode_features(frame)
-                            
+
                             if contours:
                                 largest_contour = max(contours, key=cv2.contourArea)
                                 self.reference_symbols.append({
@@ -46,19 +59,21 @@ class SymbolDetector:
                                     'features': feature_vector
                                 })
                                 print(f"Loaded reference: {symbol_name}")
-                                
-                                cv2.imshow(f"Processed {symbol_name}", segmented_image)
-                                cv2.waitKey(500)
-                                cv2.destroyAllWindows()
-        
+
+                                # Display each reference image briefly
+                                cv2.imshow(f"Reference - {symbol_name}", frame)
+                                cv2.waitKey(800)  # Show for 800ms
+                                cv2.destroyWindow(f"Reference - {symbol_name}")
+
         if not self.reference_symbols:
             print("No valid reference images found!")
             return False
-        
+
         self.save_references()
         return True
 
     def fuzzy_color_segmentation(self, frame):
+        """Segments the frame to keep only red, blue, or yellow areas."""
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         color_ranges = {
             'red': [(0, 50, 50), (10, 255, 255)],
@@ -68,26 +83,32 @@ class SymbolDetector:
         mask = np.zeros(frame.shape[:2], dtype=np.uint8)
         for (lower, upper) in color_ranges.values():
             mask |= cv2.inRange(hsv, np.array(lower), np.array(upper))
-        kernel = np.ones((3,3), np.uint8)
+        kernel = np.ones((3, 3), np.uint8)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
         return cv2.bitwise_and(frame, frame, mask=mask)
 
     def detect_edges(self, frame):
+        """Returns edges and contours from the segmented frame."""
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         blurred = cv2.GaussianBlur(gray, (5, 5), 0)
         edges = cv2.Canny(blurred, 50, 150)
         contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        return edges, [c for c in contours if cv2.contourArea(c) > self.min_contour_area]
+        # Filter out small contours
+        large_contours = [c for c in contours if cv2.contourArea(c) > self.min_contour_area]
+        return edges, large_contours
 
     def encode_features(self, frame):
+        """Creates a feature vector from the resized HSV image."""
         resized = cv2.resize(frame, (32, 32))
         hsv = cv2.cvtColor(resized, cv2.COLOR_BGR2HSV)
         h, s, v = cv2.split(hsv)
         return np.concatenate((h.flatten(), s.flatten(), v.flatten()))
 
     def match_contour(self, contour, frame):
+        """Tries to match a detected contour with reference symbols."""
         detected_features = self.encode_features(frame)
         for ref in self.reference_symbols:
+            # Skip references missing features
             if 'features' not in ref:
                 continue
             shape_match = cv2.matchShapes(ref['contour'], contour, cv2.CONTOURS_MATCH_I2, 0)
@@ -108,31 +129,34 @@ class SymbolDetector:
         return False
 
     def process_frame(self, frame):
+        """Process the captured frame: no grayscale overlay, just bounding boxes."""
         segmented_frame = self.fuzzy_color_segmentation(frame)
-        edges, contours = self.detect_edges(segmented_frame)
-        edge_display = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
-        output = cv2.addWeighted(frame, 0.7, edge_display, 0.3, 0)
+        _, contours = self.detect_edges(segmented_frame)
+
+        # We'll display the original frame, not the grayscale edges
+        output = frame.copy()
         for contour in contours:
             matched_name = self.match_contour(contour, frame)
             if matched_name:
                 x, y, w, h = cv2.boundingRect(contour)
-                cv2.rectangle(output, (x, y, x + w, y + h), (0, 255, 0), 2)
-                cv2.putText(output, matched_name, (x, y - 10), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                cv2.rectangle(output, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                cv2.putText(output, matched_name, (x, y - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         return output
 
     def run(self):
-        if not self.load_references():
-            if not self.process_reference_images():
-                print("No reference data available. Exiting.")
-                return
+        """Main method: load references, show them, then do live detection."""
+        # Always re-process references so user sees them before live detection
+        if not self.process_reference_images():
+            print("No reference data available. Exiting.")
+            return
 
         print("Starting live detection. Press 'q' to quit.")
         try:
             while True:
                 frame = self.capture_image()
                 output = self.process_frame(frame)
-                cv2.imshow('Symbol Detection', output)
+                cv2.imshow('Camera Feed', output)
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     break
         finally:
