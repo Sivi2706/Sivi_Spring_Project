@@ -39,7 +39,7 @@ class SymbolDetector:
                             edges, contours = self.detect_edges(frame)
                             dominant_color = self.get_dominant_color(frame)
                             
-                            if contours:
+                            if contours and dominant_color is not None:
                                 largest_contour = max(contours, key=cv2.contourArea)
                                 self.reference_symbols.append({
                                     'name': symbol_name,
@@ -83,6 +83,8 @@ class SymbolDetector:
         return "Unknown"
 
     def get_dominant_color(self, frame):
+        if frame is None or frame.size == 0:
+            return None
         pixels = frame.reshape(-1, 3)
         avg_color = np.mean(pixels, axis=0)
         return avg_color
@@ -91,14 +93,13 @@ class SymbolDetector:
         for ref in self.reference_symbols:
             match_value = cv2.matchShapes(ref['contour'], contour, cv2.CONTOURS_MATCH_I2, 0)
             if match_value < self.match_threshold:
-                # Extract color from detected contour
                 mask = np.zeros(frame.shape[:2], dtype=np.uint8)
                 cv2.drawContours(mask, [contour], -1, 255, thickness=cv2.FILLED)
                 detected_color = self.get_dominant_color(cv2.bitwise_and(frame, frame, mask=mask))
                 
-                # Compare color similarity
-                if np.linalg.norm(detected_color - ref['color']) < self.color_threshold:
-                    return ref['name']
+                if 'color' in ref and detected_color is not None:
+                    if np.linalg.norm(detected_color - ref['color']) < self.color_threshold:
+                        return ref['name']
         return None
 
     def save_references(self, filename="symbol_references.pkl"):
