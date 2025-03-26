@@ -101,7 +101,7 @@ def set_servo_angle_simple(servo_pwm, angle):
 
 # New function: use servo tuning logic to perform a turn based on a scanned angle.
 def turn_with_scanned_angle(scanned_angle, servo_pwm, right_pwm, left_pwm):
-    # Calculate turn time: assume 45Â° turn takes 1 second
+    # Calculate turn time: assume 45Ã‚Â° turn takes 1 second
     turn_time = abs(scanned_angle - 90) / 45.0
     if scanned_angle > 90:
         print(f"Detected angle {scanned_angle}: Pivoting LEFT for {turn_time:.2f} seconds")
@@ -277,7 +277,7 @@ def main():
                     error, line_found, intersection = detect_line(frame)
                     # Check if an intersection is detected
                     if intersection:
-                        print("Intersection detected. Centering servo to 90Â° and adjusting.")
+                        print("Intersection detected. Centering servo to 90Ã‚Â° and adjusting.")
                         set_servo_angle_simple(servo_pwm, 90)
                         state = "NORMAL"
                     elif line_found:
@@ -309,5 +309,5 @@ def main():
         GPIO.cleanup()
         print("Resources released")
 
-if _name_ == "_main_":
+if __name__ == "_main_":
     main()
