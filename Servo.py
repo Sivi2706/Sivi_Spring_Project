@@ -24,7 +24,7 @@ SERVO_FREQ = 50            # 50Hz frequency for servo
 
 # Line following parameters
 BASE_SPEED = 80          # Base motor speed (0-100)
-TURN_SPEED = 65            # Speed for pivot turns (0-100)
+TURN_SPEED = 60            # Speed for pivot turns (0-100)
 MIN_CONTOUR_AREA = 1000    # Minimum area for valid contours
 FRAME_WIDTH = 640          # Camera frame width
 FRAME_HEIGHT = 480         # Camera frame height
@@ -102,17 +102,17 @@ def set_servo_angle(servo_pwm, angle):
 # Motor control functions
 def pivot_turn_right(right_pwm, left_pwm):
     # Right wheel backward, left wheel forward
-    GPIO.output(IN1, GPIO.HIGH)   # Left forward
+    GPIO.output(IN1, GPIO.HIGH)   # Left forward 
     GPIO.output(IN2, GPIO.LOW)
-    GPIO.output(IN3, GPIO.HIGH)   # Right backward
-    GPIO.output(IN4, GPIO.LOW)
+    GPIO.output(IN3, GPIO.LOW)   # Right backward #HIGH
+    GPIO.output(IN4, GPIO.LOW)    
     right_pwm.ChangeDutyCycle(TURN_SPEED)
     left_pwm.ChangeDutyCycle(TURN_SPEED)
 
 def pivot_turn_left(right_pwm, left_pwm):
     # Right wheel forward, left wheel backward
     GPIO.output(IN1, GPIO.LOW)    # Left backward
-    GPIO.output(IN2, GPIO.HIGH)
+    GPIO.output(IN2, GPIO.LOW)   #HIGH
     GPIO.output(IN3, GPIO.LOW)    # Right forward
     GPIO.output(IN4, GPIO.HIGH)
     right_pwm.ChangeDutyCycle(TURN_SPEED)
