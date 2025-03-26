@@ -40,10 +40,42 @@ def left_encoder_callback(channel):
     global left_counter
     left_counter += 1
 
-# Previous functions remain the same (setup_gpio, movement functions, etc.)
-# ... [Keep all previous functions from the original script]
+# GPIO Setup
+def setup_gpio():
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setwarnings(False)
+    
+    # Motor pins setup
+    GPIO.setup(IN1, GPIO.OUT)
+    GPIO.setup(IN2, GPIO.OUT)
+    GPIO.setup(IN3, GPIO.OUT)
+    GPIO.setup(IN4, GPIO.OUT)
+    GPIO.setup(ENA, GPIO.OUT)
+    GPIO.setup(ENB, GPIO.OUT)
+    
+    # Encoder pins setup
+    GPIO.setup(encoderPinRight, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    GPIO.setup(encoderPinLeft, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    
+    # Set up encoder interrupts
+    GPIO.add_event_detect(encoderPinRight, GPIO.RISING, callback=right_encoder_callback)
+    GPIO.add_event_detect(encoderPinLeft, GPIO.RISING, callback=left_encoder_callback)
+    
+    # Set up PWM for motors
+    right_pwm = GPIO.PWM(ENA, 1000)  # 1000 Hz frequency
+    left_pwm = GPIO.PWM(ENB, 1000)
+    
+    right_pwm.start(0)
+    left_pwm.start(0)
+    
+    # Set up PWM for servo
+    GPIO.setup(ServoMotor, GPIO.OUT)
+    servo_pwm = GPIO.PWM(ServoMotor, SERVO_FREQ)
+    servo_pwm.start(0)
+    
+    return right_pwm, left_pwm, servo_pwm
 
-# Modified set_servo_angle function to track angle
+# Function to set servo angle
 def set_servo_angle(servo_pwm, angle):
     global current_servo_angle
     if angle < 0:
@@ -57,7 +89,54 @@ def set_servo_angle(servo_pwm, angle):
     servo_pwm.ChangeDutyCycle(0)  # Stop sending signal to prevent jitter
     current_servo_angle = angle
 
-# New realignment function
+# Movement functions
+def move_forward(right_pwm, left_pwm, speed):
+    GPIO.output(IN1, GPIO.HIGH)
+    GPIO.output(IN2, GPIO.LOW)
+    GPIO.output(IN3, GPIO.LOW)
+    GPIO.output(IN4, GPIO.HIGH)
+    right_pwm.ChangeDutyCycle(speed)
+    left_pwm.ChangeDutyCycle(speed)
+
+def move_backward(right_pwm, left_pwm, speed):
+    GPIO.output(IN1, GPIO.LOW)
+    GPIO.output(IN2, GPIO.HIGH)
+    GPIO.output(IN3, GPIO.HIGH)
+    GPIO.output(IN4, GPIO.LOW)
+    right_pwm.ChangeDutyCycle(speed)
+    left_pwm.ChangeDutyCycle(speed)
+
+def turn_right(right_pwm, left_pwm, speed):
+    GPIO.output(IN1, GPIO.HIGH)
+    GPIO.output(IN2, GPIO.LOW)
+    GPIO.output(IN3, GPIO.HIGH)
+    GPIO.output(IN4, GPIO.LOW)
+    right_pwm.ChangeDutyCycle(speed)
+    left_pwm.ChangeDutyCycle(speed)
+
+def turn_left(right_pwm, left_pwm, speed):
+    GPIO.output(IN1, GPIO.LOW)
+    GPIO.output(IN2, GPIO.HIGH)
+    GPIO.output(IN3, GPIO.LOW)
+    GPIO.output(IN4, GPIO.HIGH)
+    right_pwm.ChangeDutyCycle(speed)
+    left_pwm.ChangeDutyCycle(speed)
+
+def stop_motors(right_pwm, left_pwm):
+    right_pwm.ChangeDutyCycle(0)
+    left_pwm.ChangeDutyCycle(0)
+    GPIO.output(IN1, GPIO.LOW)
+    GPIO.output(IN2, GPIO.LOW)
+    GPIO.output(IN3, GPIO.LOW)
+    GPIO.output(IN4, GPIO.LOW)
+
+# Function to calculate distance
+def calculate_distance(encoder_count):
+    revolutions = encoder_count / PULSES_PER_REVOLUTION
+    distance = revolutions * WHEEL_CIRCUMFERENCE
+    return distance
+
+# Realignment function
 def realignment(right_pwm, left_pwm, servo_pwm, target_servo_angle):
     global right_counter, left_counter, initial_servo_angle, current_servo_angle
     
@@ -70,7 +149,6 @@ def realignment(right_pwm, left_pwm, servo_pwm, target_servo_angle):
     set_servo_angle(servo_pwm, target_servo_angle)
     
     # Calculate the angular displacement needed
-    # This is a simplified approximation - actual method may need calibration
     angle_difference = abs(target_servo_angle - initial_servo_angle)
     
     # Determine turn direction based on angle difference
@@ -82,7 +160,6 @@ def realignment(right_pwm, left_pwm, servo_pwm, target_servo_angle):
         turn_left(right_pwm, left_pwm, 50)  # 50% speed
     
     # Calculate encoder pulses needed for rotation
-    # This is a rough approximation and needs precise calibration
     circumference = math.pi * ROBOT_WIDTH
     rotation_portion = angle_difference / 360.0
     required_distance = circumference * rotation_portion
@@ -111,7 +188,22 @@ def realignment(right_pwm, left_pwm, servo_pwm, target_servo_angle):
     print(f"Right Encoder Pulses: {right_counter - initial_right_counter}")
     print(f"Left Encoder Pulses: {left_counter - initial_left_counter}")
 
-# Modify manual_control to include realignment
+# Print movement stats
+def print_movement_stats():
+    global right_counter, left_counter
+    
+    # Calculate distances
+    right_distance = calculate_distance(right_counter)
+    left_distance = calculate_distance(left_counter)
+    distance_difference = abs(right_distance - left_distance)
+    
+    print(f"Right Encoder Pulses: {right_counter}")
+    print(f"Left Encoder Pulses: {left_counter}")
+    print(f"Right Encoder Distance: {right_distance:.2f} cm")
+    print(f"Left Encoder Distance: {left_distance:.2f} cm")
+    print(f"Difference: {distance_difference:.2f} cm")
+
+# Main loop for manual control
 def manual_control():
     global right_counter, left_counter
     right_pwm, left_pwm, servo_pwm = setup_gpio()
@@ -168,8 +260,51 @@ def manual_control():
                     print("Invalid angle value. Please use format 'ra <angle>'")
                 continue
                 
-            # Existing movement command handling remains the same
-            # ... [rest of the original manual_control function]
+            # For movement commands
+            try:
+                cmd_parts = command.split()
+                if len(cmd_parts) != 2:
+                    print("Please use format '<command> <speed>'")
+                    continue
+                    
+                cmd, speed = cmd_parts
+                speed = float(speed)
+                
+                if not (0 <= speed <= 100):
+                    print("Speed must be between 0 and 100")
+                    continue
+                
+                # Reset encoder counts
+                right_counter = 0
+                left_counter = 0
+                
+                # Execute movement based on command
+                if cmd == 'f':
+                    print(f"Moving forward at {speed}% for {movement_time:.1f} seconds")
+                    move_forward(right_pwm, left_pwm, speed)
+                elif cmd == 'b':
+                    print(f"Moving backward at {speed}% for {movement_time:.1f} seconds")
+                    move_backward(right_pwm, left_pwm, speed)
+                elif cmd == 'r':
+                    print(f"Turning right at {speed}% for {movement_time:.1f} seconds")
+                    turn_right(right_pwm, left_pwm, speed)
+                elif cmd == 'l':
+                    print(f"Turning left at {speed}% for {movement_time:.1f} seconds")
+                    turn_left(right_pwm, left_pwm, speed)
+                else:
+                    print(f"Unknown command: {cmd}")
+                    continue
+                
+                # Run for specified time
+                time.sleep(movement_time)
+                stop_motors(right_pwm, left_pwm)
+                print("Motors stopped.")
+                
+                # Print movement statistics
+                print_movement_stats()
+                
+            except (ValueError, IndexError):
+                print("Invalid command format. Use '<command> <speed>'")
     
     except KeyboardInterrupt:
         print("\nManual control stopped by user.")
