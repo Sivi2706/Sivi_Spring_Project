@@ -4,7 +4,7 @@ import numpy as np
 import cv2
 from picamera2 import Picamera2
 
-# --------------------- GPIO & Motor Pins ----------------------
+# Define GPIO pins
 IN1, IN2 = 22, 27         # Left motor control
 IN3, IN4 = 17, 4          # Right motor control
 ENA, ENB = 13, 12         # PWM pins for motors (ENA = Right, ENB = Left)
@@ -12,34 +12,42 @@ encoderPinRight = 23      # Right encoder
 encoderPinLeft = 24       # Left encoder
 ServoMotor = 18           # Servo motor PWM for the camera
 
-# --------------------- Robot / Movement Constants -------------
-WHEEL_DIAMETER = 4.05
+# Constants
+WHEEL_DIAMETER = 4.05      # cm
 PULSES_PER_REVOLUTION = 20
-WHEEL_CIRCUMFERENCE = np.pi * WHEEL_DIAMETER
+WHEEL_CIRCUMFERENCE = np.pi * WHEEL_DIAMETER  # cm
 
-SERVO_MIN_DUTY = 2.5
-SERVO_MAX_DUTY = 12.5
-SERVO_FREQ = 50
+# Servo motor parameters
+SERVO_MIN_DUTY = 2.5       # Duty cycle for 0 degrees
+SERVO_MAX_DUTY = 12.5      # Duty cycle for 180 degrees
+SERVO_FREQ = 50            # 50Hz frequency for servo
 
+# Line following parameters
 BASE_SPEED = 40            # Base motor speed (0-100)
 TURN_SPEED = 50            # Speed for pivot turns (0-100)
-MIN_CONTOUR_AREA = 1000    # Min area for valid line contours
-FRAME_WIDTH = 640
-FRAME_HEIGHT = 480
+MIN_CONTOUR_AREA = 1000    # Minimum area for valid contours
+FRAME_WIDTH = 640          # Camera frame width
+FRAME_HEIGHT = 480         # Camera frame height
 
-TURN_THRESHOLD = 80        # Error threshold for normal pivot turning
+# 90-degree scan parameters
+TOP_ROI_HEIGHT_RATIO = 0.2  # Top 20% of the frame for special scanning
+
+# Threshold for turning
+TURN_THRESHOLD = 80        # Error threshold for pivoting
+
+# Recovery parameters
 REVERSE_DURATION = 0.5     # Seconds to reverse
 REVERSE_SPEED = 40         # Speed when reversing
 
-# Scanning angles
+# Updated scanning angles: center at 90, right at 45, left at 135.
 SCAN_ANGLES = [90, 45, 135]
-SCAN_TIME_PER_ANGLE = 0.5
+SCAN_TIME_PER_ANGLE = 0.5   # Seconds to wait per scan angle
 
-# Encoder counters
+# Variables to store encoder counts
 right_counter = 0
 left_counter = 0
 
-# --------------------- Encoder Callbacks -----------------------
+# Encoder callback functions
 def right_encoder_callback(channel):
     global right_counter
     right_counter += 1
@@ -48,43 +56,85 @@ def left_encoder_callback(channel):
     global left_counter
     left_counter += 1
 
-# --------------------- GPIO Setup ------------------------------
+# GPIO Setup
 def setup_gpio():
     GPIO.setmode(GPIO.BCM)
     GPIO.setwarnings(False)
     
-    # Motor pins
-    for pin in [IN1, IN2, IN3, IN4, ENA, ENB]:
-        GPIO.setup(pin, GPIO.OUT)
-
-    # Encoders
+    # Motor pins setup
+    GPIO.setup(IN1, GPIO.OUT)
+    GPIO.setup(IN2, GPIO.OUT)
+    GPIO.setup(IN3, GPIO.OUT)
+    GPIO.setup(IN4, GPIO.OUT)
+    GPIO.setup(ENA, GPIO.OUT)
+    GPIO.setup(ENB, GPIO.OUT)
+    
+    # Encoder pins setup
     GPIO.setup(encoderPinRight, GPIO.IN, pull_up_down=GPIO.PUD_UP)
     GPIO.setup(encoderPinLeft, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    
+    # Set up encoder interrupts
     GPIO.add_event_detect(encoderPinRight, GPIO.RISING, callback=right_encoder_callback)
     GPIO.add_event_detect(encoderPinLeft, GPIO.RISING, callback=left_encoder_callback)
-
-    # PWM for motors
-    right_pwm = GPIO.PWM(ENA, 1000)  # 1kHz
+    
+    # Set up PWM for motors
+    right_pwm = GPIO.PWM(ENA, 1000)  # 1000 Hz frequency
     left_pwm = GPIO.PWM(ENB, 1000)
     right_pwm.start(0)
     left_pwm.start(0)
-
-    # Servo
+    
+    # Set up PWM for servo
     GPIO.setup(ServoMotor, GPIO.OUT)
     servo_pwm = GPIO.PWM(ServoMotor, SERVO_FREQ)
     servo_pwm.start(0)
-
+    
     return right_pwm, left_pwm, servo_pwm
 
-# --------------------- Servo Control ---------------------------
+# Function to set servo angle (simple version for scanning and reset)
 def set_servo_angle_simple(servo_pwm, angle):
-    angle = max(0, min(180, angle))  # Constrain
+    # Constrain angle
+    if angle < 0:
+        angle = 0
+    elif angle > 180:
+        angle = 180
     duty = SERVO_MIN_DUTY + (angle * (SERVO_MAX_DUTY - SERVO_MIN_DUTY) / 180.0)
     servo_pwm.ChangeDutyCycle(duty)
-    time.sleep(0.3)
+    time.sleep(0.3)  # Allow time for movement
     servo_pwm.ChangeDutyCycle(0)
 
-# --------------------- Motor Control ---------------------------
+# New function: use servo tuning logic to perform a turn based on a scanned angle.
+def turn_with_scanned_angle(scanned_angle, servo_pwm, right_pwm, left_pwm):
+    # Calculate turn time: assume 45° turn takes 1 second
+    turn_time = abs(scanned_angle - 90) / 45.0
+    if scanned_angle > 90:
+        print(f"Detected angle {scanned_angle}: Pivoting LEFT for {turn_time:.2f} seconds")
+        # For left pivot: right wheel forward, left wheel backward
+        GPIO.output(IN1, GPIO.LOW)    # Left backward
+        GPIO.output(IN2, GPIO.HIGH)
+        GPIO.output(IN3, GPIO.LOW)    # Right forward
+        GPIO.output(IN4, GPIO.HIGH)
+        right_pwm.ChangeDutyCycle(TURN_SPEED)
+        left_pwm.ChangeDutyCycle(TURN_SPEED)
+    elif scanned_angle < 90:
+        print(f"Detected angle {scanned_angle}: Pivoting RIGHT for {turn_time:.2f} seconds")
+        # For right pivot: left wheel forward, right wheel backward
+        GPIO.output(IN1, GPIO.HIGH)   # Left forward
+        GPIO.output(IN2, GPIO.LOW)
+        GPIO.output(IN3, GPIO.HIGH)   # Right backward
+        GPIO.output(IN4, GPIO.LOW)
+        right_pwm.ChangeDutyCycle(TURN_SPEED)
+        left_pwm.ChangeDutyCycle(TURN_SPEED)
+    else:
+        print("Detected angle 90: No pivot required.")
+        return
+
+    time.sleep(turn_time)
+    stop_motors(right_pwm, left_pwm)
+    # Reset the servo to center
+    print("Resetting servo to 90 degrees")
+    set_servo_angle_simple(servo_pwm, 90)
+
+# Motor control functions
 def pivot_turn_right(right_pwm, left_pwm):
     GPIO.output(IN1, GPIO.HIGH)   # Left forward
     GPIO.output(IN2, GPIO.LOW)
@@ -120,30 +170,12 @@ def move_backward(right_pwm, left_pwm, speed):
 def stop_motors(right_pwm, left_pwm):
     right_pwm.ChangeDutyCycle(0)
     left_pwm.ChangeDutyCycle(0)
-    for pin in [IN1, IN2, IN3, IN4]:
-        GPIO.output(pin, GPIO.LOW)
+    GPIO.output(IN1, GPIO.LOW)
+    GPIO.output(IN2, GPIO.LOW)
+    GPIO.output(IN3, GPIO.LOW)
+    GPIO.output(IN4, GPIO.LOW)
 
-def turn_with_scanned_angle(scanned_angle, servo_pwm, right_pwm, left_pwm):
-    """
-    Uses the servo scanning angle to decide how long to pivot turn.
-    If scanned_angle > 90 => pivot left, < 90 => pivot right.
-    """
-    turn_time = abs(scanned_angle - 90) / 45.0  # 45° => 1s
-    if scanned_angle > 90:
-        print(f"Detected angle {scanned_angle}: Pivoting LEFT for {turn_time:.2f} s")
-        pivot_turn_left(right_pwm, left_pwm)
-    elif scanned_angle < 90:
-        print(f"Detected angle {scanned_angle}: Pivoting RIGHT for {turn_time:.2f} s")
-        pivot_turn_right(right_pwm, left_pwm)
-    else:
-        print("Detected angle 90: No pivot required.")
-        return
-    time.sleep(turn_time)
-    stop_motors(right_pwm, left_pwm)
-    print("Resetting servo to 90 degrees")
-    set_servo_angle_simple(servo_pwm, 90)
-
-# --------------------- Camera Setup ----------------------------
+# Initialize camera
 def setup_camera():
     picam2 = Picamera2()
     config = picam2.create_preview_configuration(main={"size": (FRAME_WIDTH, FRAME_HEIGHT)})
@@ -151,152 +183,123 @@ def setup_camera():
     picam2.start()
     return picam2
 
-# --------------------- Corner Detection Helpers ----------------
-def line_intersection(l1, l2):
-    """
-    Compute the intersection of two lines each given by (x1, y1, x2, y2).
-    Returns (px, py) or None if parallel/out of range.
-    """
-    x1, y1, x2, y2 = l1
-    x3, y3, x4, y4 = l2
-    denom = (x1 - x2)*(y3 - y4) - (y1 - y2)*(x3 - x4)
-    if denom == 0:
-        return None
-    px = ((x1*y2 - y1*x2)*(x3 - x4) - (x1 - x2)*(x3*y4 - y3*x4)) / denom
-    py = ((x1*y2 - y1*x2)*(y3 - y4) - (y1 - y2)*(x3*y4 - y3*x4)) / denom
-    return int(px), int(py)
-
-def confirm_turn_direction_with_black_pixels(mask, px, py):
-    """
-    Look at a region around (px, py). Whichever side (left or right) has more
-    black pixels indicates a left or right 90° corner.
-    """
-    region_size = 50  # half-size
-    x1 = max(0, px - region_size)
-    x2 = min(FRAME_WIDTH, px + region_size)
-    y1 = max(0, py - region_size)
-    y2 = min(FRAME_HEIGHT, py + region_size)
-    if x2 <= x1 or y2 <= y1:
-        return None
-
-    submask = mask[y1:y2, x1:x2]
-    mid_x = submask.shape[1] // 2
-    left_region = submask[:, :mid_x]
-    right_region = submask[:, mid_x:]
-    left_black_count = cv2.countNonZero(left_region)
-    right_black_count = cv2.countNonZero(right_region)
-
-    if left_black_count > right_black_count:
-        return "turn left 90"
-    elif right_black_count > left_black_count:
-        return "turn right 90"
-    return None
-
-# --------------------- Enhanced detect_line --------------------
+# Modified line detection function:
+# Now returns error, line_found, and intersection flag.
 def detect_line(frame):
-    """
-    Returns:
-      error (int)          : horizontal offset for normal line following
-      line_found (bool)    : whether we see a main line
-      intersection (bool)  : if multiple large contours are found
-      turn_command (str)   : "turn left 90", "turn right 90", or None
-    """
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     lower_black = np.array([0, 0, 0])
-    upper_black = np.array([180, 255, 120])
+    upper_black = np.array([180, 255, 120])  # Include dark gray
     mask_black = cv2.inRange(hsv, lower_black, upper_black)
     kernel = np.ones((5, 5), np.uint8)
     mask_black = cv2.erode(mask_black, kernel, iterations=1)
     mask_black = cv2.dilate(mask_black, kernel, iterations=1)
-
+    contours, _ = cv2.findContours(mask_black, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
     center_x = FRAME_WIDTH // 2
     cv2.line(frame, (center_x, 0), (center_x, FRAME_HEIGHT), (0, 0, 255), 2)
-
-    contours, _ = cv2.findContours(mask_black, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    turn_command = None
-    error = 0
-    line_found = False
+    
     intersection = False
-
     if contours:
-        valid_contours = [c for c in contours if cv2.contourArea(c) > MIN_CONTOUR_AREA]
+        # Filter out contours that are too small
+        valid_contours = [cnt for cnt in contours if cv2.contourArea(cnt) > MIN_CONTOUR_AREA]
+        # If two or more valid contours are detected, consider it an intersection.
         if len(valid_contours) >= 2:
             intersection = True
         if valid_contours:
-            # Largest contour for normal line following
-            largest = max(valid_contours, key=cv2.contourArea)
-            cv2.drawContours(frame, [largest], -1, (0, 255, 0), 2)
-            M = cv2.moments(largest)
+            largest_contour = max(valid_contours, key=cv2.contourArea)
+            area = cv2.contourArea(largest_contour)
+            M = cv2.moments(largest_contour)
+            cv2.drawContours(frame, [largest_contour], -1, (0, 255, 0), 2)
             if M["m00"] != 0:
                 cx = int(M["m10"] / M["m00"])
                 cy = int(M["m01"] / M["m00"])
                 cv2.circle(frame, (cx, cy), 5, (255, 0, 0), -1)
                 error = cx - center_x
-                line_found = True
                 cv2.line(frame, (center_x, cy), (cx, cy), (255, 0, 0), 2)
                 cv2.putText(frame, f"Error: {error}", (10, 30),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,0,255), 2)
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+                return error, True, intersection
+    return 0, False, intersection
 
-    # --------- Hough lines for corner detection -----------
-    lines = cv2.HoughLinesP(mask_black, 1, np.pi/180, threshold=50,
-                            minLineLength=30, maxLineGap=10)
-    if lines is not None and len(lines) >= 2:
-        # Draw them for debugging
-        for i, l in enumerate(lines):
-            x1, y1, x2, y2 = l[0]
-            cv2.line(frame, (x1, y1), (x2, y2), (255, 255, 0), 2)
-            cv2.putText(frame, f"L{i}", (x1, y1 - 5),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+# New function to detect 90-degree path in top ROI
+def detect_90_degree_path(frame):
+    """
+    Detect potential 90-degree path in the top region of the frame
+    Returns boolean indicating if a 90-degree path is detected
+    """
+    # Crop top region of the frame
+    height, width = frame.shape[:2]
+    roi_height = int(height * TOP_ROI_HEIGHT_RATIO)
+    top_roi = frame[:roi_height, :]
+    
+    # Convert to HSV for better color segmentation
+    hsv = cv2.cvtColor(top_roi, cv2.COLOR_BGR2HSV)
+    
+    # Define black color range
+    lower_black = np.array([0, 0, 0])
+    upper_black = np.array([180, 255, 120])
+    
+    # Create mask
+    mask_black = cv2.inRange(hsv, lower_black, upper_black)
+    
+    # Apply morphological operations
+    kernel = np.ones((5, 5), np.uint8)
+    mask_black = cv2.erode(mask_black, kernel, iterations=1)
+    mask_black = cv2.dilate(mask_black, kernel, iterations=1)
+    
+    # Find contours
+    contours, _ = cv2.findContours(mask_black, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    # Filter contours
+    valid_contours = [cnt for cnt in contours if cv2.contourArea(cnt) > MIN_CONTOUR_AREA]
+    
+    # Check for potential 90-degree path
+    if len(valid_contours) >= 2:
+        # Visualize ROI (optional, for debugging)
+        cv2.rectangle(frame, (0, 0), (width, roi_height), (0, 255, 0), 2)
+        return True
+    
+    return False
 
-        found_corner = False
-        for i in range(len(lines)):
-            if found_corner:
-                break
-            for j in range(i+1, len(lines)):
-                l1 = lines[i][0]
-                l2 = lines[j][0]
-                pt = line_intersection(l1, l2)
-                if pt is not None:
-                    px, py = pt
-                    if 0 <= px < FRAME_WIDTH and 0 <= py < FRAME_HEIGHT:
-                        cv2.circle(frame, (px, py), 5, (0,255,255), -1)
-                        direction = confirm_turn_direction_with_black_pixels(mask_black, px, py)
-                        if direction is not None:
-                            turn_command = direction
-                            cv2.putText(frame, turn_command, (10, 60),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255,0,0), 2)
-                            found_corner = True
-                            break
-
-    return error, line_found, intersection, turn_command
-
-# --------------------- Main Program ---------------------------
+# Main function
 def main():
     right_pwm, left_pwm, servo_pwm = setup_gpio()
     picam2 = setup_camera()
-
-    # Center the servo
+    
+    # Center the servo initially
     set_servo_angle_simple(servo_pwm, 90)
     
+    # State variables
     state = "NORMAL"
     reverse_start_time = 0
+    ninety_degree_turn_direction = None
     current_scan_index = 0
     scan_start_time = 0
     detected_scan_angle = None
 
     print("Line follower started. Press 'q' in the display window or Ctrl+C to stop.")
-
+    
     try:
         while True:
             frame = picam2.capture_array()
-            error, line_found, intersection, turn_command = detect_line(frame)
+            # Existing line detection
+            error, line_found, intersection = detect_line(frame)
+            
+            # New 90-degree path detection in top ROI
+            ninety_degree_detected = detect_90_degree_path(frame)
+            
             cv2.imshow("Line Follower", frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
-
+            
             if state == "NORMAL":
-                if line_found:
-                    # Normal line following
+                if ninety_degree_detected:
+                    print("90-Degree path detected in top ROI!")
+                    # Determine turn direction based on previous state
+                    ninety_degree_turn_direction = "LEFT" if error < 0 else "RIGHT"
+                    state = "NINETY_DEGREE_TURN"
+                
+                elif line_found:
                     if error > TURN_THRESHOLD:
                         pivot_turn_right(right_pwm, left_pwm)
                         print("Pivot Turning Right")
@@ -307,51 +310,34 @@ def main():
                         move_forward(right_pwm, left_pwm)
                         print("Moving Forward")
                 else:
-                    # Lost line => Reverse
                     print("Line lost. Reversing...")
                     state = "REVERSING"
                     reverse_start_time = time.time()
                     move_backward(right_pwm, left_pwm, REVERSE_SPEED)
-
+            
             elif state == "REVERSING":
                 if time.time() - reverse_start_time >= REVERSE_DURATION:
                     stop_motors(right_pwm, left_pwm)
                     print("Beginning scan for line...")
                     state = "SCANNING"
                     current_scan_index = 0
+                    # Set servo to first scan angle
                     set_servo_angle_simple(servo_pwm, SCAN_ANGLES[current_scan_index])
                     scan_start_time = time.time()
-
+            
             elif state == "SCANNING":
-                # Wait for the servo angle to settle, then check for line
                 if time.time() - scan_start_time >= SCAN_TIME_PER_ANGLE:
                     frame = picam2.capture_array()
-                    error, line_found, intersection, turn_command = detect_line(frame)
-
-                    # If a 90° corner is detected, turn immediately
-                    if turn_command == "turn left 90":
-                        print("Detected 90° left corner while scanning!")
-                        pivot_turn_left(right_pwm, left_pwm)
-                        time.sleep(1.0)  # Adjust for actual 90° turn
-                        stop_motors(right_pwm, left_pwm)
+                    error, line_found, intersection = detect_line(frame)
+                    # Check if an intersection is detected
+                    if intersection:
+                        print("Intersection detected. Centering servo to 90° and adjusting.")
                         set_servo_angle_simple(servo_pwm, 90)
                         state = "NORMAL"
-
-                    elif turn_command == "turn right 90":
-                        print("Detected 90° right corner while scanning!")
-                        pivot_turn_right(right_pwm, left_pwm)
-                        time.sleep(1.0)  # Adjust for actual 90° turn
-                        stop_motors(right_pwm, left_pwm)
-                        set_servo_angle_simple(servo_pwm, 90)
-                        state = "NORMAL"
-
-                    # Otherwise, if we found a normal line, pivot based on scanned angle
                     elif line_found:
                         detected_scan_angle = SCAN_ANGLES[current_scan_index]
                         print(f"Line detected during scan at servo angle: {detected_scan_angle}")
                         state = "TURNING"
-
-                    # If not found, go to next scan angle
                     else:
                         current_scan_index += 1
                         if current_scan_index < len(SCAN_ANGLES):
@@ -362,12 +348,28 @@ def main():
                             state = "REVERSING"
                             move_backward(right_pwm, left_pwm, REVERSE_SPEED)
                             reverse_start_time = time.time()
-
+            
             elif state == "TURNING":
                 if detected_scan_angle is not None:
                     turn_with_scanned_angle(detected_scan_angle, servo_pwm, right_pwm, left_pwm)
                 state = "NORMAL"
-
+            
+            elif state == "NINETY_DEGREE_TURN":
+                # Perform a more pronounced turn based on detected direction
+                if ninety_degree_turn_direction == "LEFT":
+                    print("Executing 90-degree LEFT turn")
+                    pivot_turn_left(right_pwm, left_pwm)
+                    time.sleep(1.5)  # Adjust turn duration as needed
+                else:
+                    print("Executing 90-degree RIGHT turn")
+                    pivot_turn_right(right_pwm, left_pwm)
+                    time.sleep(1.5)  # Adjust turn duration as needed
+                
+                # Reset state and prepare for normal line following
+                stop_motors(right_pwm, left_pwm)
+                ninety_degree_turn_direction = None
+                state = "NORMAL"
+    
     except KeyboardInterrupt:
         print("\nProgram stopped by user")
     finally:
@@ -376,6 +378,6 @@ def main():
         cv2.destroyAllWindows()
         GPIO.cleanup()
         print("Resources released")
-
+        
 if __name__ == "__main__":
     main()
