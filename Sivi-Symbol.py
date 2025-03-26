@@ -1,25 +1,25 @@
 import numpy as np
 import cv2
 import os
-from picamera2 import Picamera2
 import pickle
+from picamera import PiCamera
+from time import sleep
 
 class SymbolDetector:
     def __init__(self):
         self.reference_symbols = []
         self.min_contour_area = 500
-        self.match_threshold = 0.2  # Increased for more flexibility
-        self.color_threshold = 75  # Increased to allow more color variance
-        self.initialize_camera()
+        self.match_threshold = 0.2
+        self.color_threshold = 75
+        self.camera = PiCamera()
+        self.camera.resolution = (640, 480)
 
-    def initialize_camera(self):
-        try:
-            self.picam2 = Picamera2()
-            self.picam2.configure(self.picam2.create_preview_configuration(main={"size": (640, 480)}))
-            self.picam2.start()
-        except RuntimeError as e:
-            print(f"Camera initialization failed: {e}")
-            exit()
+    def capture_image(self):
+        self.camera.start_preview()
+        sleep(2)  # Allow camera to adjust exposure
+        self.camera.capture('/tmp/captured.jpg')
+        self.camera.stop_preview()
+        return cv2.imread('/tmp/captured.jpg')
 
     def process_reference_images(self, folder_path="Symbol-images"):
         if not os.path.exists(folder_path):
@@ -40,7 +40,7 @@ class SymbolDetector:
                             edges, contours = self.detect_edges(segmented_image)
                             feature_vector = self.encode_features(frame)
                             
-                            if contours is not None:
+                            if contours:
                                 largest_contour = max(contours, key=cv2.contourArea)
                                 self.reference_symbols.append({
                                     'name': symbol_name,
@@ -86,6 +86,8 @@ class SymbolDetector:
     def match_contour(self, contour, frame):
         detected_features = self.encode_features(frame)
         for ref in self.reference_symbols:
+            if 'features' not in ref:
+                continue
             shape_match = cv2.matchShapes(ref['contour'], contour, cv2.CONTOURS_MATCH_I2, 0)
             feature_distance = np.linalg.norm(detected_features - ref['features'])
             if shape_match < self.match_threshold and feature_distance < self.color_threshold:
@@ -104,7 +106,6 @@ class SymbolDetector:
         return False
 
     def process_frame(self, frame):
-        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
         segmented_frame = self.fuzzy_color_segmentation(frame)
         edges, contours = self.detect_edges(segmented_frame)
         edge_display = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
@@ -127,14 +128,14 @@ class SymbolDetector:
         print("Starting live detection. Press 'q' to quit.")
         try:
             while True:
-                frame = self.picam2.capture_array()
+                frame = self.capture_image()
                 output = self.process_frame(frame)
                 cv2.imshow('Symbol Detection', output)
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     break
         finally:
             cv2.destroyAllWindows()
-            self.picam2.stop()
+            self.camera.close()
 
 if __name__ == "__main__":
     detector = SymbolDetector()
