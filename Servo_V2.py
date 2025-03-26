@@ -23,8 +23,8 @@ SERVO_MAX_DUTY = 12.5      # Duty cycle for 180 degrees
 SERVO_FREQ = 50            # 50Hz frequency for servo
 
 # Line following parameters
-BASE_SPEED = 70            # Base motor speed (0-100)
-TURN_SPEED = 80            # Speed for pivot turns (0-100)
+BASE_SPEED = 50            # Base motor speed (0-100)
+TURN_SPEED = 65            # Speed for pivot turns (0-100)
 MIN_CONTOUR_AREA = 1000    # Minimum area for valid contours
 FRAME_WIDTH = 640          # Camera frame width
 FRAME_HEIGHT = 480         # Camera frame height
@@ -33,9 +33,9 @@ FRAME_HEIGHT = 480         # Camera frame height
 TURN_THRESHOLD = 40        # Adjust this value based on your needs
 
 # Recovery parameters
-REVERSE_DURATION = 0.7     # seconds to reverse straight
+REVERSE_DURATION = 0.5    # seconds to reverse straight
 REVERSE_DIR_DURATION = 1.0 # seconds to reverse with direction
-REVERSE_SPEED = 50         # speed when reversing straight
+REVERSE_SPEED = 35         # speed when reversing straight
 REVERSE_SPEED_HIGH = 60    # higher speed for directional reverse
 REVERSE_SPEED_LOW = 30     # lower speed for directional reverse
 SCAN_ANGLES = [45, 135, 90]  # left, right, center
