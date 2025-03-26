@@ -23,20 +23,23 @@ SERVO_MAX_DUTY = 12.5      # Duty cycle for 180 degrees
 SERVO_FREQ = 50            # 50Hz frequency for servo
 
 # Line following parameters
-BASE_SPEED = 65           # Base motor speed (0-100)
-TURN_SPEED = 50           # Speed for pivot turns (0-100)
-MIN_CONTOUR_AREA = 1000   # Minimum area for valid contours
-FRAME_WIDTH = 640         # Camera frame width
-FRAME_HEIGHT = 480        # Camera frame height
+BASE_SPEED = 65            # Base motor speed (0-100)
+TURN_SPEED = 50            # Speed for pivot turns (0-100)
+MIN_CONTOUR_AREA = 1000    # Minimum area for valid contours
+FRAME_WIDTH = 640          # Camera frame width
+FRAME_HEIGHT = 480         # Camera frame height
 
-# Threshold for turning
-TURN_THRESHOLD = 85       # Error threshold for pivoting
+# Define ROI height for deceleration error (top 1/3 of the frame)
+ROI_HEIGHT = FRAME_HEIGHT // 3
+
+# Threshold for turning (based on main error)
+TURN_THRESHOLD = 85       
 
 # Recovery parameters
-REVERSE_DURATION = 0.5    # Seconds to reverse
-REVERSE_SPEED = 40        # Speed when reversing
+REVERSE_DURATION = 0.5     # Seconds to reverse
+REVERSE_SPEED = 40         # Speed when reversing
 
-# Updated scanning angles: center at 90, right at 45, left at 135.
+# Scanning angles: center at 90, right at 45, left at 135.
 SCAN_ANGLES = [90, 45, 135]
 SCAN_TIME_PER_ANGLE = 0.5   # Seconds to wait per scan angle
 
@@ -87,9 +90,8 @@ def setup_gpio():
     
     return right_pwm, left_pwm, servo_pwm
 
-# Function to set servo angle (simple version for scanning and reset)
+# Function to set servo angle (for scanning and reset)
 def set_servo_angle_simple(servo_pwm, angle):
-    # Constrain angle
     if angle < 0:
         angle = 0
     elif angle > 180:
@@ -99,13 +101,11 @@ def set_servo_angle_simple(servo_pwm, angle):
     time.sleep(0.3)  # Allow time for movement
     servo_pwm.ChangeDutyCycle(0)
 
-# New function: use servo tuning logic to perform a turn based on a scanned angle.
+# Function to perform a pivot turn based on scanned angle.
 def turn_with_scanned_angle(scanned_angle, servo_pwm, right_pwm, left_pwm):
-    # Calculate turn time: assume 45° turn takes 1 second
-    turn_time = abs(scanned_angle - 90) / 45.0
+    turn_time = abs(scanned_angle - 90) / 45.0  # Assume 45° turn takes 1 second
     if scanned_angle > 90:
         print(f"Detected angle {scanned_angle}: Pivoting LEFT for {turn_time:.2f} seconds")
-        # For left pivot: right wheel forward, left wheel backward
         GPIO.output(IN1, GPIO.LOW)    # Left backward
         GPIO.output(IN2, GPIO.HIGH)
         GPIO.output(IN3, GPIO.LOW)    # Right forward
@@ -114,7 +114,6 @@ def turn_with_scanned_angle(scanned_angle, servo_pwm, right_pwm, left_pwm):
         left_pwm.ChangeDutyCycle(TURN_SPEED)
     elif scanned_angle < 90:
         print(f"Detected angle {scanned_angle}: Pivoting RIGHT for {turn_time:.2f} seconds")
-        # For right pivot: left wheel forward, right wheel backward
         GPIO.output(IN1, GPIO.HIGH)   # Left forward
         GPIO.output(IN2, GPIO.LOW)
         GPIO.output(IN3, GPIO.HIGH)   # Right backward
@@ -127,7 +126,6 @@ def turn_with_scanned_angle(scanned_angle, servo_pwm, right_pwm, left_pwm):
 
     time.sleep(turn_time)
     stop_motors(right_pwm, left_pwm)
-    # Reset the servo to center
     print("Resetting servo to 90 degrees")
     set_servo_angle_simple(servo_pwm, 90)
 
@@ -148,13 +146,11 @@ def pivot_turn_left(right_pwm, left_pwm):
     right_pwm.ChangeDutyCycle(TURN_SPEED)
     left_pwm.ChangeDutyCycle(TURN_SPEED)
 
-# Modified forward function: decelerates in proportion to the turning threshold.
-def move_forward(right_pwm, left_pwm, error):
-    # Calculate deceleration factor based on the error magnitude relative to TURN_THRESHOLD.
-    # When error is 0, factor is 1; when error equals TURN_THRESHOLD, factor reduces.
-    deceleration_factor = (TURN_THRESHOLD - abs(error)) / TURN_THRESHOLD
-    # Ensure a minimum factor (e.g., 0.3) so the robot doesn't stall.
-    deceleration_factor = max(0.3, deceleration_factor)
+# Modified forward function that decelerates using the deceleration error from the top ROI.
+def move_forward(right_pwm, left_pwm, decel_error):
+    # Use the deceleration error (from top region) for deceleration.
+    deceleration_factor = (TURN_THRESHOLD - abs(decel_error)) / TURN_THRESHOLD
+    deceleration_factor = max(0.3, deceleration_factor)  # minimum speed factor
     speed = BASE_SPEED * deceleration_factor
 
     GPIO.output(IN1, GPIO.HIGH)
@@ -163,7 +159,7 @@ def move_forward(right_pwm, left_pwm, error):
     GPIO.output(IN4, GPIO.HIGH)
     right_pwm.ChangeDutyCycle(speed)
     left_pwm.ChangeDutyCycle(speed)
-    print(f"Moving Forward at speed: {speed:.2f}")
+    print(f"Moving Forward at speed: {speed:.2f} (Decel error: {decel_error})")
 
 def move_backward(right_pwm, left_pwm, speed):
     GPIO.output(IN1, GPIO.LOW)
@@ -190,7 +186,10 @@ def setup_camera():
     return picam2
 
 # Modified line detection function:
-# Returns error, line_found, and an intersection flag.
+# Computes two error values:
+#   1. main_error: using the largest valid contour in the entire frame.
+#   2. decel_error: using the largest valid contour within the top ROI (y < ROI_HEIGHT).
+# Also returns line_found and intersection flag.
 def detect_line(frame):
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     lower_black = np.array([0, 0, 0])
@@ -202,29 +201,52 @@ def detect_line(frame):
     contours, _ = cv2.findContours(mask_black, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     center_x = FRAME_WIDTH // 2
+    # Draw center line (vertical) for reference
     cv2.line(frame, (center_x, 0), (center_x, FRAME_HEIGHT), (0, 0, 255), 2)
     
+    main_error = 0
+    decel_error = 0
+    line_found = False
     intersection = False
-    if contours:
-        # Filter out contours that are too small.
-        valid_contours = [cnt for cnt in contours if cv2.contourArea(cnt) > MIN_CONTOUR_AREA]
-        # If two or more valid contours are detected, consider it an intersection.
-        if len(valid_contours) >= 2:
-            intersection = True
-        if valid_contours:
-            largest_contour = max(valid_contours, key=cv2.contourArea)
-            M = cv2.moments(largest_contour)
-            cv2.drawContours(frame, [largest_contour], -1, (0, 255, 0), 2)
+    valid_contours = [cnt for cnt in contours if cv2.contourArea(cnt) > MIN_CONTOUR_AREA]
+    
+    if len(valid_contours) >= 2:
+        intersection = True
+        
+    if valid_contours:
+        # Compute main error from the largest contour overall.
+        largest_contour = max(valid_contours, key=cv2.contourArea)
+        M = cv2.moments(largest_contour)
+        if M["m00"] != 0:
+            cx = int(M["m10"] / M["m00"])
+            main_error = cx - center_x
+            line_found = True
+            # Draw main error: red marker and line.
+            cv2.circle(frame, (cx, int(M["m01"] / M["m00"])), 5, (0, 0, 255), -1)
+            cv2.line(frame, (center_x, int(M["m01"] / M["m00"])), (cx, int(M["m01"] / M["m00"])), (0, 0, 255), 2)
+            cv2.putText(frame, f"Main Err: {main_error}", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+        # Compute deceleration error using contours within the top ROI.
+        top_contours = []
+        for cnt in valid_contours:
+            M = cv2.moments(cnt)
             if M["m00"] != 0:
-                cx = int(M["m10"] / M["m00"])
                 cy = int(M["m01"] / M["m00"])
-                cv2.circle(frame, (cx, cy), 5, (255, 0, 0), -1)
-                error = cx - center_x
-                cv2.line(frame, (center_x, cy), (cx, cy), (255, 0, 0), 2)
-                cv2.putText(frame, f"Error: {error}", (10, 30),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
-                return error, True, intersection
-    return 0, False, intersection
+                if cy < ROI_HEIGHT:
+                    top_contours.append(cnt)
+        if top_contours:
+            top_contour = max(top_contours, key=cv2.contourArea)
+            M_top = cv2.moments(top_contour)
+            if M_top["m00"] != 0:
+                cx_top = int(M_top["m10"] / M_top["m00"])
+                decel_error = cx_top - center_x
+                # Draw deceleration error: blue marker and line.
+                cv2.circle(frame, (cx_top, int(M_top["m01"] / M_top["m00"])), 5, (255, 0, 0), -1)
+                cv2.line(frame, (center_x, int(M_top["m01"] / M_top["m00"])), (cx_top, int(M_top["m01"] / M_top["m00"])), (255, 0, 0), 2)
+                cv2.putText(frame, f"Decel Err: {decel_error}", (10, 60),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)
+                
+    return main_error, decel_error, line_found, intersection
 
 # Main function
 def main():
@@ -246,22 +268,24 @@ def main():
     try:
         while True:
             frame = picam2.capture_array()
-            # Unpack three return values from detect_line.
-            error, line_found, intersection = detect_line(frame)
+            # Unpack four return values.
+            main_error, decel_error, line_found, intersection = detect_line(frame)
             cv2.imshow("Line Follower", frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
             
             if state == "NORMAL":
                 if line_found:
-                    if error > TURN_THRESHOLD:
+                    # Use the main error for pivot decisions.
+                    if main_error > TURN_THRESHOLD:
                         pivot_turn_right(right_pwm, left_pwm)
                         print("Pivot Turning Right")
-                    elif error < -TURN_THRESHOLD:
+                    elif main_error < -TURN_THRESHOLD:
                         pivot_turn_left(right_pwm, left_pwm)
                         print("Pivot Turning Left")
                     else:
-                        move_forward(right_pwm, left_pwm, error)
+                        # Use the deceleration error (from top ROI) for slowing forward.
+                        move_forward(right_pwm, left_pwm, decel_error)
                 else:
                     print("Line lost. Reversing...")
                     state = "REVERSING"
@@ -274,15 +298,13 @@ def main():
                     print("Beginning scan for line...")
                     state = "SCANNING"
                     current_scan_index = 0
-                    # Set servo to first scan angle.
                     set_servo_angle_simple(servo_pwm, SCAN_ANGLES[current_scan_index])
                     scan_start_time = time.time()
             
             elif state == "SCANNING":
                 if time.time() - scan_start_time >= SCAN_TIME_PER_ANGLE:
                     frame = picam2.capture_array()
-                    error, line_found, intersection = detect_line(frame)
-                    # Check if an intersection is detected.
+                    main_error, decel_error, line_found, intersection = detect_line(frame)
                     if intersection:
                         print("Intersection detected. Centering servo to 90° and adjusting.")
                         set_servo_angle_simple(servo_pwm, 90)
