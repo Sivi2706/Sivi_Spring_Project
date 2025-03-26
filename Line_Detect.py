@@ -68,20 +68,12 @@ def stop_motors(right_pwm, left_pwm):
         GPIO.output(pin, GPIO.LOW)
 
 def turn_left_90(right_pwm, left_pwm, duration=1.0):
-    """
-    Executes a ~90° turn to the left by pivoting motors for `duration` seconds.
-    Adjust duration to fine-tune the actual angle.
-    """
     print("Executing Turn Left 90")
     pivot_turn_left(right_pwm, left_pwm)
     time.sleep(duration)
     stop_motors(right_pwm, left_pwm)
 
 def turn_right_90(right_pwm, left_pwm, duration=1.0):
-    """
-    Executes a ~90° turn to the right by pivoting motors for `duration` seconds.
-    Adjust duration to fine-tune the actual angle.
-    """
     print("Executing Turn Right 90")
     pivot_turn_right(right_pwm, left_pwm)
     time.sleep(duration)
@@ -99,7 +91,7 @@ def setup_camera():
 def line_intersection(l1, l2):
     """
     Computes the intersection (px, py) of two lines each given by (x1, y1, x2, y2).
-    Returns None if lines are parallel or if denominator = 0.
+    Returns None if lines are parallel or denominator = 0.
     """
     x1, y1, x2, y2 = l1
     x3, y3, x4, y4 = l2
@@ -109,6 +101,43 @@ def line_intersection(l1, l2):
     px = ((x1*y2 - y1*x2)*(x3 - x4) - (x1 - x2)*(x3*y4 - y3*x4)) / denom
     py = ((x1*y2 - y1*x2)*(y3 - y4) - (y1 - y2)*(x3*y4 - y3*x4)) / denom
     return int(px), int(py)
+
+def confirm_turn_direction_with_black_pixels(mask, px, py):
+    """
+    Given the mask of black regions and an intersection point (px, py),
+    this function checks a small region around (px, py) and counts
+    black pixels in the left vs. right half.
+    
+    Returns: "turn left 90", "turn right 90", or None if inconclusive.
+    """
+    region_size = 50  # Half-size of the region to check
+    x1 = max(0, px - region_size)
+    x2 = min(FRAME_WIDTH, px + region_size)
+    y1 = max(0, py - region_size)
+    y2 = min(FRAME_HEIGHT, py + region_size)
+
+    # If the intersection is near the edges, skip or handle carefully
+    if x2 <= x1 or y2 <= y1:
+        return None
+
+    submask = mask[y1:y2, x1:x2]
+
+    # Split submask vertically into left half and right half
+    mid_x = submask.shape[1] // 2
+    left_region = submask[:, :mid_x]
+    right_region = submask[:, mid_x:]
+
+    left_black_count = cv2.countNonZero(left_region)
+    right_black_count = cv2.countNonZero(right_region)
+
+    # Debug prints (optional)
+    # print(f"Left black: {left_black_count}, Right black: {right_black_count}")
+
+    if left_black_count > right_black_count:
+        return "turn left 90"
+    elif right_black_count > left_black_count:
+        return "turn right 90"
+    return None
 
 # --------------------- Main Detection Function -----------------
 def detect_line(frame):
@@ -157,7 +186,6 @@ def detect_line(frame):
                             cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
 
     # --- Hough lines to detect potential 90° corner ---
-    # (We always run it on the same mask; you can refine if needed)
     lines = cv2.HoughLinesP(mask, 1, np.pi/180, threshold=50,
                             minLineLength=30, maxLineGap=10)
     if lines is not None and len(lines) >= 2:
@@ -185,12 +213,10 @@ def detect_line(frame):
                         cv2.circle(frame, (px, py), 7, (0, 255, 255), -1)
                         cv2.putText(frame, f"({px},{py})", (px+5, py),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,255), 1)
-                        # Decide turn command if intersection is clearly left or right
-                        if px < center_x - 20:
-                            turn_command = "turn left 90"
-                        elif px > center_x + 20:
-                            turn_command = "turn right 90"
-                        if turn_command:
+                        # Use black-pixel count around intersection to confirm direction
+                        direction = confirm_turn_direction_with_black_pixels(mask, px, py)
+                        if direction is not None:
+                            turn_command = direction
                             cv2.putText(frame, turn_command, (10, 60),
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)
                             found_intersection = True
