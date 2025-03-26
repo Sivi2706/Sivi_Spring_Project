@@ -23,14 +23,14 @@ SERVO_MAX_DUTY = 12.5      # Duty cycle for 180 degrees
 SERVO_FREQ = 50            # 50Hz frequency for servo
 
 # Line following parameters
-BASE_SPEED = 50            # Base motor speed (0-100)
-TURN_SPEED = 60            # Speed for pivot turns (0-100)
+BASE_SPEED = 40            # Base motor speed (0-100)
+TURN_SPEED = 50            # Speed for pivot turns (0-100)
 MIN_CONTOUR_AREA = 1000    # Minimum area for valid contours
 FRAME_WIDTH = 640          # Camera frame width
 FRAME_HEIGHT = 480         # Camera frame height
 
 # Threshold for turning
-TURN_THRESHOLD = 50        # Error threshold for pivoting
+TURN_THRESHOLD = 80        # Error threshold for pivoting
 
 # Recovery parameters
 REVERSE_DURATION = 0.5     # Seconds to reverse
@@ -101,7 +101,7 @@ def set_servo_angle_simple(servo_pwm, angle):
 
 # New function: use servo tuning logic to perform a turn based on a scanned angle.
 def turn_with_scanned_angle(scanned_angle, servo_pwm, right_pwm, left_pwm):
-    # Calculate turn time: assume 45° turn takes 1 second
+    # Calculate turn time: assume 45Â° turn takes 1 second
     turn_time = abs(scanned_angle - 90) / 45.0
     if scanned_angle > 90:
         print(f"Detected angle {scanned_angle}: Pivoting LEFT for {turn_time:.2f} seconds")
@@ -277,7 +277,7 @@ def main():
                     error, line_found, intersection = detect_line(frame)
                     # Check if an intersection is detected
                     if intersection:
-                        print("Intersection detected. Centering servo to 90° and adjusting.")
+                        print("Intersection detected. Centering servo to 90Â° and adjusting.")
                         set_servo_angle_simple(servo_pwm, 90)
                         state = "NORMAL"
                     elif line_found:
@@ -309,5 +309,5 @@ def main():
         GPIO.cleanup()
         print("Resources released")
 
-if __name__ == "__main__":
+if _name_ == "_main_":
     main()

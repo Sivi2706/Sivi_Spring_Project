@@ -23,18 +23,18 @@ SERVO_MAX_DUTY = 12.5      # Duty cycle for 180 degrees
 SERVO_FREQ = 50            # 50Hz frequency for servo
 
 # Line following parameters
-BASE_SPEED =  65           # Base motor speed (0-100)
-TURN_SPEED =50           # Speed for pivot turns (0-100)
-MIN_CONTOUR_AREA = 1000    # Minimum area for valid contours
-FRAME_WIDTH = 640          # Camera frame width
-FRAME_HEIGHT = 480         # Camera frame height
+BASE_SPEED = 65           # Base motor speed (0-100)
+TURN_SPEED = 50           # Speed for pivot turns (0-100)
+MIN_CONTOUR_AREA = 1000   # Minimum area for valid contours
+FRAME_WIDTH = 640         # Camera frame width
+FRAME_HEIGHT = 480        # Camera frame height
 
 # Threshold for turning
-TURN_THRESHOLD =  85        # Error threshold for pivoting
+TURN_THRESHOLD = 85       # Error threshold for pivoting
 
 # Recovery parameters
-REVERSE_DURATION = 0.5     # Seconds to reverse
-REVERSE_SPEED = 40         # Speed when reversing
+REVERSE_DURATION = 0.5    # Seconds to reverse
+REVERSE_SPEED = 40        # Speed when reversing
 
 # Updated scanning angles: center at 90, right at 45, left at 135.
 SCAN_ANGLES = [90, 45, 135]
@@ -101,7 +101,7 @@ def set_servo_angle_simple(servo_pwm, angle):
 
 # New function: use servo tuning logic to perform a turn based on a scanned angle.
 def turn_with_scanned_angle(scanned_angle, servo_pwm, right_pwm, left_pwm):
-    # Calculate turn time: assume 45Â° turn takes 1 second
+    # Calculate turn time: assume 45° turn takes 1 second
     turn_time = abs(scanned_angle - 90) / 45.0
     if scanned_angle > 90:
         print(f"Detected angle {scanned_angle}: Pivoting LEFT for {turn_time:.2f} seconds")
@@ -148,13 +148,22 @@ def pivot_turn_left(right_pwm, left_pwm):
     right_pwm.ChangeDutyCycle(TURN_SPEED)
     left_pwm.ChangeDutyCycle(TURN_SPEED)
 
-def move_forward(right_pwm, left_pwm):
+# Modified forward function: decelerates in proportion to the turning threshold.
+def move_forward(right_pwm, left_pwm, error):
+    # Calculate deceleration factor based on the error magnitude relative to TURN_THRESHOLD.
+    # When error is 0, factor is 1; when error equals TURN_THRESHOLD, factor reduces.
+    deceleration_factor = (TURN_THRESHOLD - abs(error)) / TURN_THRESHOLD
+    # Ensure a minimum factor (e.g., 0.3) so the robot doesn't stall.
+    deceleration_factor = max(0.3, deceleration_factor)
+    speed = BASE_SPEED * deceleration_factor
+
     GPIO.output(IN1, GPIO.HIGH)
     GPIO.output(IN2, GPIO.LOW)
     GPIO.output(IN3, GPIO.LOW)
     GPIO.output(IN4, GPIO.HIGH)
-    right_pwm.ChangeDutyCycle(BASE_SPEED)
-    left_pwm.ChangeDutyCycle(BASE_SPEED)
+    right_pwm.ChangeDutyCycle(speed)
+    left_pwm.ChangeDutyCycle(speed)
+    print(f"Moving Forward at speed: {speed:.2f}")
 
 def move_backward(right_pwm, left_pwm, speed):
     GPIO.output(IN1, GPIO.LOW)
@@ -181,7 +190,7 @@ def setup_camera():
     return picam2
 
 # Modified line detection function:
-# Now returns error, line_found, and intersection flag.
+# Returns error, line_found, and an intersection flag.
 def detect_line(frame):
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     lower_black = np.array([0, 0, 0])
@@ -197,14 +206,13 @@ def detect_line(frame):
     
     intersection = False
     if contours:
-        # Filter out contours that are too small
+        # Filter out contours that are too small.
         valid_contours = [cnt for cnt in contours if cv2.contourArea(cnt) > MIN_CONTOUR_AREA]
         # If two or more valid contours are detected, consider it an intersection.
         if len(valid_contours) >= 2:
             intersection = True
         if valid_contours:
             largest_contour = max(valid_contours, key=cv2.contourArea)
-            area = cv2.contourArea(largest_contour)
             M = cv2.moments(largest_contour)
             cv2.drawContours(frame, [largest_contour], -1, (0, 255, 0), 2)
             if M["m00"] != 0:
@@ -223,10 +231,10 @@ def main():
     right_pwm, left_pwm, servo_pwm = setup_gpio()
     picam2 = setup_camera()
     
-    # Center the servo initially
+    # Center the servo initially.
     set_servo_angle_simple(servo_pwm, 90)
     
-    # State variables
+    # State variables.
     state = "NORMAL"
     reverse_start_time = 0
     current_scan_index = 0
@@ -238,7 +246,7 @@ def main():
     try:
         while True:
             frame = picam2.capture_array()
-            # Adjusted to unpack three return values.
+            # Unpack three return values from detect_line.
             error, line_found, intersection = detect_line(frame)
             cv2.imshow("Line Follower", frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -253,8 +261,7 @@ def main():
                         pivot_turn_left(right_pwm, left_pwm)
                         print("Pivot Turning Left")
                     else:
-                        move_forward(right_pwm, left_pwm)
-                        print("Moving Forward")
+                        move_forward(right_pwm, left_pwm, error)
                 else:
                     print("Line lost. Reversing...")
                     state = "REVERSING"
@@ -267,7 +274,7 @@ def main():
                     print("Beginning scan for line...")
                     state = "SCANNING"
                     current_scan_index = 0
-                    # Set servo to first scan angle
+                    # Set servo to first scan angle.
                     set_servo_angle_simple(servo_pwm, SCAN_ANGLES[current_scan_index])
                     scan_start_time = time.time()
             
@@ -275,9 +282,9 @@ def main():
                 if time.time() - scan_start_time >= SCAN_TIME_PER_ANGLE:
                     frame = picam2.capture_array()
                     error, line_found, intersection = detect_line(frame)
-                    # Check if an intersection is detected
+                    # Check if an intersection is detected.
                     if intersection:
-                        print("Intersection detected. Centering servo to 90Â° and adjusting.")
+                        print("Intersection detected. Centering servo to 90° and adjusting.")
                         set_servo_angle_simple(servo_pwm, 90)
                         state = "NORMAL"
                     elif line_found:
