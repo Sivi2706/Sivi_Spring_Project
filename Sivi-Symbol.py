@@ -8,8 +8,8 @@ class SymbolDetector:
     def __init__(self):
         self.reference_symbols = []
         self.min_contour_area = 500
-        self.match_threshold = 0.15  # Lower is better match
-        self.color_threshold = 50  # Allowable color difference
+        self.match_threshold = 0.2  # Increased for more flexibility
+        self.color_threshold = 75  # Increased to allow more color variance
         self.initialize_camera()
 
     def initialize_camera(self):
@@ -45,7 +45,7 @@ class SymbolDetector:
                                     'name': symbol_name,
                                     'contour': largest_contour,
                                     'shape': self.determine_shape(largest_contour),
-                                    'color': dominant_color
+                                    'color': dominant_color.tolist()  # Ensure it's a list
                                 })
                                 print(f"Loaded reference: {symbol_name}")
         
@@ -64,7 +64,7 @@ class SymbolDetector:
         kernel = np.ones((3,3), np.uint8)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=2)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
-        edges = cv2.Canny(mask, 30, 100)
+        edges = cv2.Canny(mask, 50, 150)  # Adjusted thresholds for better edge detection
         edges = cv2.dilate(edges, kernel, iterations=1)
         contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         return edges, [c for c in contours if cv2.contourArea(c) > self.min_contour_area]
@@ -98,7 +98,7 @@ class SymbolDetector:
                 detected_color = self.get_dominant_color(cv2.bitwise_and(frame, frame, mask=mask))
                 
                 if 'color' in ref and detected_color is not None:
-                    if np.linalg.norm(detected_color - ref['color']) < self.color_threshold:
+                    if np.linalg.norm(np.array(detected_color) - np.array(ref['color'])) < self.color_threshold:
                         return ref['name']
         return None
 
@@ -122,8 +122,8 @@ class SymbolDetector:
             matched_name = self.match_contour(contour, frame)
             if matched_name:
                 x, y, w, h = cv2.boundingRect(contour)
-                cv2.rectangle(output, (x, y), (x+w, y+h), (0, 255, 0), 2)
-                cv2.putText(output, matched_name, (x, y-10), 
+                cv2.rectangle(output, (x, y, x + w, y + h), (0, 255, 0), 2)
+                cv2.putText(output, matched_name, (x, y - 10), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
         return output
 
