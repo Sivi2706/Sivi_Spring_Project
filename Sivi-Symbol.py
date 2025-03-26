@@ -46,6 +46,10 @@ class SymbolDetector:
                                     'features': feature_vector
                                 })
                                 print(f"Loaded reference: {symbol_name}")
+                                
+                                cv2.imshow(f"Processed {symbol_name}", segmented_image)
+                                cv2.waitKey(500)
+                                cv2.destroyAllWindows()
         
         if not self.reference_symbols:
             print("No valid reference images found!")
