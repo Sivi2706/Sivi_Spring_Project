@@ -2,7 +2,7 @@ import numpy as np
 import cv2
 import os
 import pickle
-from picamera import PiCamera
+from picamera2 import Picamera2
 from time import sleep
 
 class SymbolDetector:
@@ -11,15 +11,13 @@ class SymbolDetector:
         self.min_contour_area = 500
         self.match_threshold = 0.2
         self.color_threshold = 75
-        self.camera = PiCamera()
-        self.camera.resolution = (640, 480)
+        self.camera = Picamera2()
+        self.camera.configure(self.camera.create_preview_configuration(main={"size": (640, 480)}))
+        self.camera.start()
 
     def capture_image(self):
-        self.camera.start_preview()
-        sleep(2)  # Allow camera to adjust exposure
-        self.camera.capture('/tmp/captured.jpg')
-        self.camera.stop_preview()
-        return cv2.imread('/tmp/captured.jpg')
+        frame = self.camera.capture_array()
+        return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
 
     def process_reference_images(self, folder_path="Symbol-images"):
         if not os.path.exists(folder_path):
@@ -135,7 +133,7 @@ class SymbolDetector:
                     break
         finally:
             cv2.destroyAllWindows()
-            self.camera.close()
+            self.camera.stop()
 
 if __name__ == "__main__":
     detector = SymbolDetector()
