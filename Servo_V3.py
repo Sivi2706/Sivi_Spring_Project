@@ -136,6 +136,56 @@ def calculate_distance(encoder_count):
     distance = revolutions * WHEEL_CIRCUMFERENCE
     return distance
 
+# Rotation function maintaining servo angle
+def rotate_to_servo_angle(right_pwm, left_pwm, servo_pwm):
+    global right_counter, left_counter, current_servo_angle
+    
+    # Initial setup
+    initial_right_counter = right_counter
+    initial_left_counter = left_counter
+    
+    # Calculate rotation based on current servo angle
+    if current_servo_angle > 90:
+        # Turn right
+        turn_right(right_pwm, left_pwm, 50)  # 50% speed
+        rotation_direction = "right"
+    elif current_servo_angle < 90:
+        # Turn left
+        turn_left(right_pwm, left_pwm, 50)  # 50% speed
+        rotation_direction = "left"
+    else:
+        print("Servo already at forward position. No rotation needed.")
+        return
+    
+    # Calculate rotation angle
+    angle_difference = abs(current_servo_angle - 90)
+    
+    # Calculate encoder pulses needed for rotation
+    circumference = math.pi * ROBOT_WIDTH
+    rotation_portion = angle_difference / 360.0
+    required_distance = circumference * rotation_portion
+    
+    # Estimate pulses needed (this will need precise calibration)
+    estimated_pulses = int(required_distance / WHEEL_CIRCUMFERENCE * PULSES_PER_REVOLUTION)
+    
+    # Wait until we've approximately rotated the right amount
+    start_time = time.time()
+    while (abs(right_counter - initial_right_counter) < estimated_pulses and 
+           abs(left_counter - initial_left_counter) < estimated_pulses):
+        time.sleep(0.1)
+        if time.time() - start_time > 5:  # Timeout after 5 seconds
+            break
+    
+    # Stop motors
+    stop_motors(right_pwm, left_pwm)
+    
+    # Print rotation stats
+    print("Rotation Complete:")
+    print(f"Current Servo Angle: {current_servo_angle}")
+    print(f"Rotation Direction: {rotation_direction}")
+    print(f"Right Encoder Pulses: {right_counter - initial_right_counter}")
+    print(f"Left Encoder Pulses: {left_counter - initial_left_counter}")
+
 # Realignment function
 def realignment(right_pwm, left_pwm, servo_pwm, target_servo_angle):
     global right_counter, left_counter, initial_servo_angle, current_servo_angle
@@ -217,6 +267,7 @@ def manual_control():
     print("  s - Stop motors")
     print("  sv <angle> - Set servo angle (0-180)")
     print("  ra <angle> - Realign robot with servo")
+    print("  re - Rotate to servo angle")
     print("  t <time> - Set movement time (seconds)")
     print("  q - Quit")
     
@@ -224,7 +275,7 @@ def manual_control():
     
     try:
         while True:
-            command = input("\nEnter command (f/b/r/l/s/sv/ra/t/q): ").strip().lower()
+            command = input("\nEnter command (f/b/r/l/s/sv/ra/re/t/q): ").strip().lower()
             
             if command == 'q':
                 break
@@ -258,6 +309,10 @@ def manual_control():
                     print(f"Realignment to {angle} degrees complete")
                 except (ValueError, IndexError):
                     print("Invalid angle value. Please use format 'ra <angle>'")
+                continue
+            
+            if command == 're':
+                rotate_to_servo_angle(right_pwm, left_pwm, servo_pwm)
                 continue
                 
             # For movement commands
