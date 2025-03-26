@@ -9,6 +9,7 @@ class SymbolDetector:
         self.reference_symbols = []
         self.min_contour_area = 500
         self.match_threshold = 0.15  # Lower is better match
+        self.color_threshold = 50  # Allowable color difference
         self.initialize_camera()
 
     def initialize_camera(self):
@@ -36,13 +37,15 @@ class SymbolDetector:
                         if frame is not None:
                             symbol_name = subfolder  # Use folder name as symbol name
                             edges, contours = self.detect_edges(frame)
+                            dominant_color = self.get_dominant_color(frame)
                             
                             if contours:
                                 largest_contour = max(contours, key=cv2.contourArea)
                                 self.reference_symbols.append({
                                     'name': symbol_name,
                                     'contour': largest_contour,
-                                    'shape': self.determine_shape(largest_contour)
+                                    'shape': self.determine_shape(largest_contour),
+                                    'color': dominant_color
                                 })
                                 print(f"Loaded reference: {symbol_name}")
         
@@ -79,11 +82,23 @@ class SymbolDetector:
             return "Circle"
         return "Unknown"
 
-    def match_contour(self, contour):
+    def get_dominant_color(self, frame):
+        pixels = frame.reshape(-1, 3)
+        avg_color = np.mean(pixels, axis=0)
+        return avg_color
+
+    def match_contour(self, contour, frame):
         for ref in self.reference_symbols:
             match_value = cv2.matchShapes(ref['contour'], contour, cv2.CONTOURS_MATCH_I2, 0)
             if match_value < self.match_threshold:
-                return ref['name']
+                # Extract color from detected contour
+                mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+                cv2.drawContours(mask, [contour], -1, 255, thickness=cv2.FILLED)
+                detected_color = self.get_dominant_color(cv2.bitwise_and(frame, frame, mask=mask))
+                
+                # Compare color similarity
+                if np.linalg.norm(detected_color - ref['color']) < self.color_threshold:
+                    return ref['name']
         return None
 
     def save_references(self, filename="symbol_references.pkl"):
@@ -103,7 +118,7 @@ class SymbolDetector:
         edge_display = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
         output = cv2.addWeighted(frame, 0.7, edge_display, 0.3, 0)
         for contour in contours:
-            matched_name = self.match_contour(contour)
+            matched_name = self.match_contour(contour, frame)
             if matched_name:
                 x, y, w, h = cv2.boundingRect(contour)
                 cv2.rectangle(output, (x, y), (x+w, y+h), (0, 255, 0), 2)
