@@ -23,8 +23,8 @@ SERVO_MAX_DUTY = 12.5      # Duty cycle for 180 degrees
 SERVO_FREQ = 50            # 50Hz frequency for servo
 
 # Line following parameters
-BASE_SPEED = 60            # Base motor speed (0-100)
-TURN_SPEED = 60            # Speed for pivot turns (0-100)
+BASE_SPEED = 50            # Base motor speed (0-100)
+TURN_SPEED = 70            # Speed for pivot turns (0-100)
 MIN_CONTOUR_AREA = 1000    # Minimum area for valid contours
 FRAME_WIDTH = 640          # Camera frame width
 FRAME_HEIGHT = 480         # Camera frame height
