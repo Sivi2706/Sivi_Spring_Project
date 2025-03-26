@@ -33,8 +33,8 @@ FRAME_HEIGHT = 480         # Camera frame height
 TURN_THRESHOLD = 30        # Adjust this value based on your needs
 
 # Recovery parameters
-REVERSE_DURATION = 0.5     # seconds to reverse
-REVERSE_SPEED = 35         # speed when reversing
+REVERSE_DURATION = 1     # seconds to reverse
+REVERSE_SPEED = 40         # speed when reversing
 SCAN_ANGLES = [45, 135, 90]  # left, right, center
 SCAN_TIME_PER_ANGLE = 0.5  # seconds per angle
 PIVOT_DURATION = 0.5       # seconds to pivot
