@@ -7,11 +7,11 @@ from time import sleep
 
 class SymbolDetector:
     def __init__(self):
-        # Adjust thresholds if needed
+        # Relaxed thresholds for more lenient matching
         self.reference_symbols = []
         self.min_contour_area = 500
-        self.match_threshold = 0.2
-        self.color_threshold = 75
+        self.match_threshold = 0.3      # Increased from 0.2
+        self.color_threshold = 100      # Increased from 75
 
         # Initialize Picamera2
         self.camera = Picamera2()
@@ -23,12 +23,11 @@ class SymbolDetector:
         self.camera.start()
 
     def capture_image(self):
-        """Captures a frame from the camera and fixes orientation."""
+        """Captures a frame from the camera and rotates it 180°."""
         frame = self.camera.capture_array()
-        # Convert from RGB to BGR
         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-        # Flip if needed; -1 flips both horizontally and vertically
-        frame = cv2.flip(frame, -1)
+        # Rotate 180 degrees so it's the right way up
+        frame = cv2.rotate(frame, cv2.ROTATE_180)
         return frame
 
     def process_reference_images(self, folder_path="Symbol-images"):
@@ -162,7 +161,3 @@ class SymbolDetector:
         finally:
             cv2.destroyAllWindows()
             self.camera.stop()
-
-if __name__ == "__main__":
-    detector = SymbolDetector()
-    detector.run()
