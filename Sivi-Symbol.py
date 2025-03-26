@@ -6,26 +6,40 @@ from picamera2 import Picamera2
 class SymbolRecognizer:
     def __init__(self, symbol_dir):
         self.symbol_dir = symbol_dir
-        self.symbol_templates = self.load_symbol_templates()
+        self.symbol_templates = {}
+        self.calibrate()
 
-    def load_symbol_templates(self):
-        templates = {}
+    def calibrate(self):
+        print("Starting Calibration Stage...")
         for filename in os.listdir(self.symbol_dir):
             if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
                 path = os.path.join(self.symbol_dir, filename)
                 template = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
                 if template is not None:
                     symbol_name = os.path.splitext(filename)[0]
-                    templates[symbol_name] = template
-        return templates
+                    print(f"Calibrating: {symbol_name}")
+                    
+                    # Display each template
+                    cv2.imshow(symbol_name, template)
+                    cv2.waitKey(500)  # Brief display
+                    
+                    # Store template
+                    self.symbol_templates[symbol_name] = template
+        
+        cv2.destroyAllWindows()
+        print("Calibration complete. Press 'OK' to continue.")
+        user_input = input("Enter 'OK' to start live feed: ")
+        if user_input.upper() != 'OK':
+            print("Calibration aborted.")
+            exit()
 
     def match_symbol(self, roi):
         best_match = None
         best_score = float('inf')
         
         for name, template in self.symbol_templates.items():
-            # Resize template to match ROI
             try:
+                # Resize template to match ROI
                 resized_template = cv2.resize(template, (roi.shape[1], roi.shape[0]))
                 
                 # Compute template matching
