@@ -12,13 +12,10 @@ class SymbolRecognizer:
     def calibrate(self):
         print("Starting Calibration Stage...")
         
-        # Iterate through subfolders
         for subfolder in os.listdir(self.symbol_dir):
             subfolder_path = os.path.join(self.symbol_dir, subfolder)
             
-            # Ensure it's a directory
             if os.path.isdir(subfolder_path):
-                # Iterate through PNG files in subfolder
                 for filename in os.listdir(subfolder_path):
                     if filename.lower().endswith('.png'):
                         full_path = os.path.join(subfolder_path, filename)
@@ -27,7 +24,6 @@ class SymbolRecognizer:
                         template = cv2.imread(full_path)
                         
                         if template is not None:
-                            # Create symbol name from subfolder and filename
                             symbol_name = f"{subfolder}_{os.path.splitext(filename)[0]}"
                             self.symbol_templates[symbol_name] = template
                             print(f"Loaded template: {symbol_name}")
@@ -40,31 +36,46 @@ class SymbolRecognizer:
 
     def match_symbol(self, roi):
         best_match = None
-        best_score = float('inf')
+        best_score = 0
         
+        # Ensure ROI is not empty
+        if roi is None or roi.size == 0:
+            return None
+
         for name, template in self.symbol_templates.items():
             try:
                 # Resize template to match ROI
                 resized_template = cv2.resize(template, (roi.shape[1], roi.shape[0]))
                 
-                # Compare color histogram
-                roi_hist = cv2.calcHist([roi], [0, 1, 2], None, [8, 8, 8], [0, 256, 0, 256, 0, 256])
-                template_hist = cv2.calcHist([resized_template], [0, 1, 2], None, [8, 8, 8], [0, 256, 0, 256, 0, 256])
+                # Try both original and inverted colors
+                methods = [
+                    cv2.TM_CCOEFF_NORMED,  # Standard matching
+                    cv2.TM_CCOEFF_NORMED   # Inverted color matching
+                ]
                 
-                # Normalize histograms
-                cv2.normalize(roi_hist, roi_hist)
-                cv2.normalize(template_hist, template_hist)
-                
-                # Compute histogram comparison
-                score = cv2.compareHist(roi_hist, template_hist, cv2.HISTCMP_INTERSECT)
-                
-                if score > best_score:
-                    best_score = score
-                    best_match = name
+                for method in methods:
+                    # Standard color matching
+                    result = cv2.matchTemplate(roi, resized_template, method)
+                    _, max_val, _, _ = cv2.minMaxLoc(result)
+                    
+                    # Update best match if score is higher
+                    if max_val > best_score:
+                        best_score = max_val
+                        best_match = name
+
+                    # Invert colors and try matching again
+                    inverted_roi = cv2.bitwise_not(roi)
+                    result_inv = cv2.matchTemplate(inverted_roi, resized_template, method)
+                    _, max_val_inv, _, _ = cv2.minMaxLoc(result_inv)
+                    
+                    if max_val_inv > best_score:
+                        best_score = max_val_inv
+                        best_match = name
+
             except Exception as e:
                 print(f"Error matching template {name}: {e}")
         
-        return best_match if best_score > 0.8 else None
+        return best_match if best_score > 0.7 else None
 
 def initialize_camera():
     try:
