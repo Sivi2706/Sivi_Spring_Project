@@ -34,7 +34,7 @@ TURN_THRESHOLD = 80        # Error threshold for pivoting
 
 # Recovery parameters
 REVERSE_DURATION = 0.5     # Seconds to reverse
-REVERSE_SPEED = 30         # Speed when reversing
+REVERSE_SPEED = 40         # Speed when reversing
 SCAN_ANGLES = [45, 135, 90]  # Angles to scan; note: 45 = right, 135 = left, 90 = center
 SCAN_TIME_PER_ANGLE = 0.5   # Seconds to wait per scan angle
 
