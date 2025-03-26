@@ -1,132 +1,156 @@
 import numpy as np
 import cv2
 import os
-import pickle
+from picamera2 import Picamera2
 
-class SymbolDetector:
-    def __init__(self):
-        self.reference_symbols = []
-        self.min_contour_area = 500
-        self.match_threshold = 0.2
-        self.color_threshold = 75
-        self.cap = cv2.VideoCapture(0)  # Use default webcam
+class SymbolRecognizer:
+    def __init__(self, symbol_dir):
+        self.symbol_dir = symbol_dir
+        self.symbol_templates = {}
+        self.calibrate()
 
-    def process_reference_images(self, folder_path="Symbol-images"):
-        if not os.path.exists(folder_path):
-            print(f"Reference folder {folder_path} not found!")
-            return False
-
-        for subfolder in os.listdir(folder_path):
-            subfolder_path = os.path.join(folder_path, subfolder)
+    def calibrate(self):
+        print("Starting Calibration Stage...")
+        
+        for subfolder in os.listdir(self.symbol_dir):
+            subfolder_path = os.path.join(self.symbol_dir, subfolder)
+            
             if os.path.isdir(subfolder_path):
                 for filename in os.listdir(subfolder_path):
-                    if filename.lower().endswith('.png'):
-                        image_path = os.path.join(subfolder_path, filename)
-                        frame = cv2.imread(image_path)
+                    if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+                        full_path = os.path.join(subfolder_path, filename)
                         
-                        if frame is not None:
-                            symbol_name = subfolder
-                            segmented_image = self.fuzzy_color_segmentation(frame)
-                            edges, contours = self.detect_edges(segmented_image)
-                            feature_vector = self.encode_features(frame)
-                            
-                            if contours:
-                                largest_contour = max(contours, key=cv2.contourArea)
-                                self.reference_symbols.append({
-                                    'name': symbol_name,
-                                    'contour': largest_contour,
-                                    'features': feature_vector
-                                })
-                                print(f"Loaded reference: {symbol_name}")
+                        template = cv2.imread(full_path, cv2.IMREAD_GRAYSCALE)
+                        
+                        if template is not None:
+                            symbol_name = f"{subfolder}_{os.path.splitext(filename)[0]}"
+                            self.symbol_templates[symbol_name] = template
+                            print(f"Loaded template: {symbol_name}")
         
-        if not self.reference_symbols:
-            print("No valid reference images found!")
-            return False
+        if not self.symbol_templates:
+            print("No templates found. Exiting.")
+            exit()
+        print(f"Loaded {len(self.symbol_templates)} templates.")
+
+    def match_symbol(self, roi):
+        best_match = None
+        best_score = float('inf')
         
-        self.save_references()
-        return True
+        # Preprocess ROI
+        roi_preprocessed = cv2.resize(roi, (100, 100))
+        roi_preprocessed = cv2.GaussianBlur(roi_preprocessed, (5, 5), 0)
+        
+        for name, template in self.symbol_templates.items():
+            try:
+                # Resize and preprocess template
+                template_preprocessed = cv2.resize(template, (100, 100))
+                template_preprocessed = cv2.GaussianBlur(template_preprocessed, (5, 5), 0)
+                
+                # Multiple matching methods for robustness
+                methods = [
+                    cv2.TM_SQDIFF_NORMED, 
+                    cv2.TM_CCORR_NORMED, 
+                    cv2.TM_CCOEFF_NORMED
+                ]
+                
+                scores = []
+                for method in methods:
+                    result = cv2.matchTemplate(roi_preprocessed, template_preprocessed, method)
+                    _, score, _, _ = cv2.minMaxLoc(result)
+                    scores.append(score)
+                
+                # Average score across methods
+                avg_score = np.mean(scores)
+                
+                if avg_score < best_score:
+                    best_score = avg_score
+                    best_match = name
+            
+            except Exception as e:
+                print(f"Error matching template {name}: {e}")
+        
+        # Lowered threshold for more flexible matching
+        return best_match if best_score < 0.3 else None
 
-    def fuzzy_color_segmentation(self, frame):
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        color_ranges = {
-            'red': [(0, 50, 50), (10, 255, 255)],
-            'blue': [(100, 50, 50), (140, 255, 255)],
-            'yellow': [(20, 100, 100), (30, 255, 255)]
-        }
-        mask = np.zeros(frame.shape[:2], dtype=np.uint8)
-        for (lower, upper) in color_ranges.values():
-            mask |= cv2.inRange(hsv, np.array(lower), np.array(upper))
-        kernel = np.ones((3,3), np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
-        return cv2.bitwise_and(frame, frame, mask=mask)
-
-    def detect_edges(self, frame):
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-        edges = cv2.Canny(blurred, 50, 150)
-        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        return edges, [c for c in contours if cv2.contourArea(c) > self.min_contour_area]
-
-    def encode_features(self, frame):
-        resized = cv2.resize(frame, (32, 32))
-        hsv = cv2.cvtColor(resized, cv2.COLOR_BGR2HSV)
-        h, s, v = cv2.split(hsv)
-        return np.concatenate((h.flatten(), s.flatten(), v.flatten()))
-
-    def match_contour(self, contour, frame):
-        detected_features = self.encode_features(frame)
-        for ref in self.reference_symbols:
-            shape_match = cv2.matchShapes(ref['contour'], contour, cv2.CONTOURS_MATCH_I2, 0)
-            feature_distance = np.linalg.norm(detected_features - ref['features'])
-            if shape_match < self.match_threshold and feature_distance < self.color_threshold:
-                return ref['name']
+def initialize_camera():
+    try:
+        picam2 = Picamera2()
+        picam2.configure(picam2.create_preview_configuration(main={"size": (640, 480)}))
+        picam2.start()
+        return picam2
+    except RuntimeError as e:
+        print(f"Camera initialization failed: {e}")
         return None
 
-    def save_references(self, filename="symbol_references.pkl"):
-        with open(filename, 'wb') as f:
-            pickle.dump(self.reference_symbols, f)
+def detect_shapes_and_symbols(frame, symbol_recognizer):
+    # Convert to grayscale
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    
+    # Threshold and find contours
+    _, thresh = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
+    cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    for c in cnts:
+        # Filter contours by area
+        if cv2.contourArea(c) > 500:
+            # Bounding rectangle
+            x, y, w, h = cv2.boundingRect(c)
+            
+            # Extract ROI
+            roi = gray[y:y+h, x:x+w]
+            
+            # Shape and symbol recognition
+            symbol_name = symbol_recognizer.match_symbol(roi)
+            
+            # Visualize results
+            cv2.drawContours(frame, [c], -1, (0, 255, 0), 2)
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 0, 0), 2)
+            
+            # Display recognized symbol
+            label = symbol_name if symbol_name else "Unknown Symbol"
+            cv2.putText(frame, label, (x, y - 10), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+    
+    return frame
 
-    def load_references(self, filename="symbol_references.pkl"):
-        if os.path.exists(filename):
-            with open(filename, 'rb') as f:
-                self.reference_symbols = pickle.load(f)
-            return True
-        return False
+def main():
+    # Initialize symbol recognizer
+    symbol_dir = '/home/raspberry/Documents/S1V1/Sivi_Spring_Project/Symbol-images'
+    symbol_recognizer = SymbolRecognizer(symbol_dir)
+    
+    # Initialize camera
+    picam2 = initialize_camera()
+    if picam2 is None:
+        print("Exiting program. Camera could not be initialized.")
+        return
 
-    def process_frame(self, frame):
-        segmented_frame = self.fuzzy_color_segmentation(frame)
-        edges, contours = self.detect_edges(segmented_frame)
-        edge_display = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
-        output = cv2.addWeighted(frame, 0.7, edge_display, 0.3, 0)
-        for contour in contours:
-            matched_name = self.match_contour(contour, frame)
-            if matched_name:
-                x, y, w, h = cv2.boundingRect(contour)
-                cv2.rectangle(output, (x, y, x + w, y + h), (0, 255, 0), 2)
-                cv2.putText(output, matched_name, (x, y - 10), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        return output
+    try:
+        # Main processing loop
+        while True:
+            # Capture frame from the camera
+            frame = picam2.capture_array()
 
-    def run(self):
-        if not self.load_references():
-            if not self.process_reference_images():
-                print("No reference data available. Exiting.")
-                return
+            # Flip the frame vertically (optional, depending on camera orientation)
+            frame = cv2.flip(frame, -1)
 
-        print("Starting live detection. Press 'q' to quit.")
-        try:
-            while True:
-                ret, frame = self.cap.read()
-                if not ret:
-                    break
-                output = self.process_frame(frame)
-                cv2.imshow('Symbol Detection', output)
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    break
-        finally:
-            self.cap.release()
-            cv2.destroyAllWindows()
+            # Detect shapes and symbols
+            output_frame = detect_shapes_and_symbols(frame, symbol_recognizer)
 
+            # Display the frame
+            cv2.imshow("Camera Feed", output_frame)
+
+            # Exit on 'q' key press
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
+
+    except Exception as e:
+        print(f"An error occurred: {e}")
+
+    finally:
+        # Cleanup
+        cv2.destroyAllWindows()
+        picam2.stop()
+
+# Run the main function
 if __name__ == "__main__":
-    detector = SymbolDetector()
-    detector.run()
+    main()
