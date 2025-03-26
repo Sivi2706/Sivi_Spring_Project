@@ -28,24 +28,24 @@ class SymbolDetector:
 
         for subfolder in os.listdir(folder_path):
             subfolder_path = os.path.join(folder_path, subfolder)
-            if os.path.isdir(subfolder_path):  # Ensure it's a folder
+            if os.path.isdir(subfolder_path):
                 for filename in os.listdir(subfolder_path):
                     if filename.lower().endswith('.png'):
                         image_path = os.path.join(subfolder_path, filename)
                         frame = cv2.imread(image_path)
                         
                         if frame is not None:
-                            symbol_name = subfolder  # Use folder name as symbol name
-                            edges, contours = self.detect_edges(frame)
-                            dominant_color = self.get_dominant_color(frame)
+                            symbol_name = subfolder
+                            segmented_image = self.fuzzy_color_segmentation(frame)
+                            edges, contours = self.detect_edges(segmented_image)
+                            feature_vector = self.encode_features(frame)
                             
-                            if contours and dominant_color is not None:
+                            if contours is not None:
                                 largest_contour = max(contours, key=cv2.contourArea)
                                 self.reference_symbols.append({
                                     'name': symbol_name,
                                     'contour': largest_contour,
-                                    'shape': self.determine_shape(largest_contour),
-                                    'color': dominant_color.tolist()  # Ensure it's a list
+                                    'features': feature_vector
                                 })
                                 print(f"Loaded reference: {symbol_name}")
         
@@ -56,50 +56,40 @@ class SymbolDetector:
         self.save_references()
         return True
 
-    def detect_edges(self, frame):
+    def fuzzy_color_segmentation(self, frame):
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        lower = np.array([0, 50, 50])
-        upper = np.array([180, 255, 255])
-        mask = cv2.inRange(hsv, lower, upper)
+        color_ranges = {
+            'red': [(0, 50, 50), (10, 255, 255)],
+            'blue': [(100, 50, 50), (140, 255, 255)],
+            'yellow': [(20, 100, 100), (30, 255, 255)]
+        }
+        mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+        for (lower, upper) in color_ranges.values():
+            mask |= cv2.inRange(hsv, np.array(lower), np.array(upper))
         kernel = np.ones((3,3), np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=2)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
-        edges = cv2.Canny(mask, 50, 150)  # Adjusted thresholds for better edge detection
-        edges = cv2.dilate(edges, kernel, iterations=1)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+        return cv2.bitwise_and(frame, frame, mask=mask)
+
+    def detect_edges(self, frame):
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        edges = cv2.Canny(blurred, 50, 150)
         contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         return edges, [c for c in contours if cv2.contourArea(c) > self.min_contour_area]
 
-    def determine_shape(self, contour):
-        epsilon = 0.02 * cv2.arcLength(contour, True)
-        approx = cv2.approxPolyDP(contour, epsilon, True)
-        if len(approx) == 3:
-            return "Triangle"
-        elif len(approx) == 4:
-            return "Rectangle"
-        elif len(approx) == 5:
-            return "Pentagon"
-        elif len(approx) >= 6:
-            return "Circle"
-        return "Unknown"
-
-    def get_dominant_color(self, frame):
-        if frame is None or frame.size == 0:
-            return None
-        pixels = frame.reshape(-1, 3)
-        avg_color = np.mean(pixels, axis=0)
-        return avg_color
+    def encode_features(self, frame):
+        resized = cv2.resize(frame, (32, 32))
+        hsv = cv2.cvtColor(resized, cv2.COLOR_BGR2HSV)
+        h, s, v = cv2.split(hsv)
+        return np.concatenate((h.flatten(), s.flatten(), v.flatten()))
 
     def match_contour(self, contour, frame):
+        detected_features = self.encode_features(frame)
         for ref in self.reference_symbols:
-            match_value = cv2.matchShapes(ref['contour'], contour, cv2.CONTOURS_MATCH_I2, 0)
-            if match_value < self.match_threshold:
-                mask = np.zeros(frame.shape[:2], dtype=np.uint8)
-                cv2.drawContours(mask, [contour], -1, 255, thickness=cv2.FILLED)
-                detected_color = self.get_dominant_color(cv2.bitwise_and(frame, frame, mask=mask))
-                
-                if 'color' in ref and detected_color is not None:
-                    if np.linalg.norm(np.array(detected_color) - np.array(ref['color'])) < self.color_threshold:
-                        return ref['name']
+            shape_match = cv2.matchShapes(ref['contour'], contour, cv2.CONTOURS_MATCH_I2, 0)
+            feature_distance = np.linalg.norm(detected_features - ref['features'])
+            if shape_match < self.match_threshold and feature_distance < self.color_threshold:
+                return ref['name']
         return None
 
     def save_references(self, filename="symbol_references.pkl"):
@@ -115,7 +105,8 @@ class SymbolDetector:
 
     def process_frame(self, frame):
         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-        edges, contours = self.detect_edges(frame)
+        segmented_frame = self.fuzzy_color_segmentation(frame)
+        edges, contours = self.detect_edges(segmented_frame)
         edge_display = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
         output = cv2.addWeighted(frame, 0.7, edge_display, 0.3, 0)
         for contour in contours:
