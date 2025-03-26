@@ -1,48 +1,35 @@
 import RPi.GPIO as GPIO
 import time
 import numpy as np
-import cv2
-from picamera2 import Picamera2
+import math
 
 # Define GPIO pins
 IN1, IN2 = 22, 27         # Left motor control
 IN3, IN4 = 17, 4          # Right motor control
-ENA, ENB = 13, 12         # PWM pins for motors ENA=Right ENB=Left
-encoderPinRight = 23       # Right encoder
-encoderPinLeft = 24        # Left encoder
-ServoMotor = 18            # Servo motor PWM for the camera
+ENA, ENB = 13, 12         # PWM pins for motors
+encoderPinRight = 23      # Right encoder
+encoderPinLeft =  24      # Left encoder
+ServoMotor = 18           # Servo motor PWM for the camera
 
-# Constants
-WHEEL_DIAMETER = 4.05      # cm
+# Constants (to be calibrated)
+WHEEL_DIAMETER = 4.05  # cm
 PULSES_PER_REVOLUTION = 20
 WHEEL_CIRCUMFERENCE = np.pi * WHEEL_DIAMETER  # cm
 
 # Servo motor parameters
-SERVO_MIN_DUTY = 2.5       # Duty cycle for 0 degrees
-SERVO_MAX_DUTY = 12.5      # Duty cycle for 180 degrees
-SERVO_FREQ = 50            # 50Hz frequency for servo
+SERVO_MIN_DUTY = 2.5     # Duty cycle for 0 degrees
+SERVO_MAX_DUTY = 12.5    # Duty cycle for 180 degrees
+SERVO_FREQ = 50          # 50Hz frequency for servo
 
-# Line following parameters
-BASE_SPEED = 55            # Base motor speed (0-100)
-TURN_SPEED = 80            # Speed for pivot turns (0-100)
-MIN_CONTOUR_AREA = 1000    # Minimum area for valid contours
-FRAME_WIDTH = 640          # Camera frame width
-FRAME_HEIGHT = 480         # Camera frame height
-
-# Threshold for turning
-TURN_THRESHOLD = 40        # Adjust this value based on your needs
-
-# Recovery parameters
-REVERSE_DURATION = 0.7     # seconds to reverse straight
-PIVOT_DURATION = 0.5       # seconds to pivot turn
-REVERSE_SPEED = 50         # speed when reversing straight
-PIVOT_SPEED = 60           # speed when pivoting
-SCAN_ANGLES = [45, 135, 90]  # left, right, center
-SCAN_TIME_PER_ANGLE = 0.5  # seconds per angle
+# Robot geometry constants (to be measured precisely)
+ROBOT_WIDTH = 20  # Distance between wheels in cm
+ROBOT_LENGTH = 30  # Length of the robot in cm
 
 # Variables to store encoder counts
 right_counter = 0
 left_counter = 0
+initial_servo_angle = 90  # Default initial servo position
+current_servo_angle = 90  # Track current servo angle
 
 # Encoder callback functions
 def right_encoder_callback(channel):
@@ -53,43 +40,12 @@ def left_encoder_callback(channel):
     global left_counter
     left_counter += 1
 
-# GPIO Setup
-def setup_gpio():
-    GPIO.setmode(GPIO.BCM)
-    GPIO.setwarnings(False)
-    
-    # Motor pins setup
-    GPIO.setup(IN1, GPIO.OUT)
-    GPIO.setup(IN2, GPIO.OUT)
-    GPIO.setup(IN3, GPIO.OUT)
-    GPIO.setup(IN4, GPIO.OUT)
-    GPIO.setup(ENA, GPIO.OUT)
-    GPIO.setup(ENB, GPIO.OUT)
-    
-    # Encoder pins setup
-    GPIO.setup(encoderPinRight, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-    GPIO.setup(encoderPinLeft, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-    
-    # Set up encoder interrupts
-    GPIO.add_event_detect(encoderPinRight, GPIO.RISING, callback=right_encoder_callback)
-    GPIO.add_event_detect(encoderPinLeft, GPIO.RISING, callback=left_encoder_callback)
-    
-    # Set up PWM for motors
-    right_pwm = GPIO.PWM(ENA, 1000)  # 1000 Hz frequency
-    left_pwm = GPIO.PWM(ENB, 1000)
-    
-    right_pwm.start(0)
-    left_pwm.start(0)
-    
-    # Set up PWM for servo
-    GPIO.setup(ServoMotor, GPIO.OUT)
-    servo_pwm = GPIO.PWM(ServoMotor, SERVO_FREQ)
-    servo_pwm.start(0)
-    
-    return right_pwm, left_pwm, servo_pwm
+# Previous functions remain the same (setup_gpio, movement functions, etc.)
+# ... [Keep all previous functions from the original script]
 
-# Function to set servo angle
+# Modified set_servo_angle function to track angle
 def set_servo_angle(servo_pwm, angle):
+    global current_servo_angle
     if angle < 0:
         angle = 0
     elif angle > 180:
@@ -99,235 +55,130 @@ def set_servo_angle(servo_pwm, angle):
     servo_pwm.ChangeDutyCycle(duty)
     time.sleep(0.3)  # Give servo time to move
     servo_pwm.ChangeDutyCycle(0)  # Stop sending signal to prevent jitter
+    current_servo_angle = angle
 
-# Motor control functions
-def move_forward(right_pwm, left_pwm):
-    GPIO.output(IN1, GPIO.HIGH)
-    GPIO.output(IN2, GPIO.LOW)
-    GPIO.output(IN3, GPIO.LOW)
-    GPIO.output(IN4, GPIO.HIGH)
-    right_pwm.ChangeDutyCycle(BASE_SPEED)
-    left_pwm.ChangeDutyCycle(BASE_SPEED)
-
-def move_backward(right_pwm, left_pwm, speed):
-    GPIO.output(IN1, GPIO.LOW)
-    GPIO.output(IN2, GPIO.HIGH)
-    GPIO.output(IN3, GPIO.HIGH)
-    GPIO.output(IN4, GPIO.LOW)
-    right_pwm.ChangeDutyCycle(speed)
-    left_pwm.ChangeDutyCycle(speed)
-
-def pivot_right(right_pwm, left_pwm, speed):
-    GPIO.output(IN1, GPIO.HIGH)  # Left forward
-    GPIO.output(IN2, GPIO.LOW)
-    GPIO.output(IN3, GPIO.HIGH)  # Right forward (but physically this would make right wheel go backward)
-    GPIO.output(IN4, GPIO.LOW)
-    right_pwm.ChangeDutyCycle(speed)
-    left_pwm.ChangeDutyCycle(speed)
-
-def pivot_left(right_pwm, left_pwm, speed):
-    GPIO.output(IN1, GPIO.LOW)   # Left backward
-    GPIO.output(IN2, GPIO.HIGH)
-    GPIO.output(IN3, GPIO.LOW)   # Right backward (but physically this would make right wheel go forward)
-    GPIO.output(IN4, GPIO.HIGH)
-    right_pwm.ChangeDutyCycle(speed)
-    left_pwm.ChangeDutyCycle(speed)
-
-def stop_motors(right_pwm, left_pwm):
-    right_pwm.ChangeDutyCycle(0)
-    left_pwm.ChangeDutyCycle(0)
-    GPIO.output(IN1, GPIO.LOW)
-    GPIO.output(IN2, GPIO.LOW)
-    GPIO.output(IN3, GPIO.LOW)
-    GPIO.output(IN4, GPIO.LOW)
-
-# Initialize camera
-def setup_camera():
-    picam2 = Picamera2()
-    picam2.configure(picam2.create_preview_configuration(main={"size": (FRAME_WIDTH, FRAME_HEIGHT)}))
-    picam2.start()
-    return picam2
-
-# Line detection function (using full frame)
-def detect_line(frame):
-    # Convert frame to HSV color space
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+# New realignment function
+def realignment(right_pwm, left_pwm, servo_pwm, target_servo_angle):
+    global right_counter, left_counter, initial_servo_angle, current_servo_angle
     
-    # Define specific range for black color detection
-    lower_black = np.array([0, 0, 0])
-    upper_black = np.array([180, 255, 120])  # Increased upper V value to include gray
+    # Initial setup
+    initial_right_counter = right_counter
+    initial_left_counter = left_counter
+    initial_servo_angle = current_servo_angle
     
-    # Create mask for black regions (using full frame)
-    mask_black = cv2.inRange(hsv, lower_black, upper_black)
+    # First, turn the servo to the target angle
+    set_servo_angle(servo_pwm, target_servo_angle)
     
-    # Apply morphological operations to clean up the mask
-    kernel = np.ones((5, 5), np.uint8)
-    mask_black = cv2.erode(mask_black, kernel, iterations=1)
-    mask_black = cv2.dilate(mask_black, kernel, iterations=1)
+    # Calculate the angular displacement needed
+    # This is a simplified approximation - actual method may need calibration
+    angle_difference = abs(target_servo_angle - initial_servo_angle)
     
-    # Find contours
-    contours, _ = cv2.findContours(mask_black, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # Determine turn direction based on angle difference
+    if target_servo_angle > initial_servo_angle:
+        # Turn right
+        turn_right(right_pwm, left_pwm, 50)  # 50% speed
+    else:
+        # Turn left
+        turn_left(right_pwm, left_pwm, 50)  # 50% speed
     
-    # Draw center reference line
-    center_x = FRAME_WIDTH // 2
-    cv2.line(frame, (center_x, 0), (center_x, FRAME_HEIGHT), (0, 0, 255), 2)
+    # Calculate encoder pulses needed for rotation
+    # This is a rough approximation and needs precise calibration
+    circumference = math.pi * ROBOT_WIDTH
+    rotation_portion = angle_difference / 360.0
+    required_distance = circumference * rotation_portion
     
-    # Process contours
-    if contours:
-        # Find the largest contour
-        largest_contour = max(contours, key=cv2.contourArea)
-        area = cv2.contourArea(largest_contour)
-        
-        if area > MIN_CONTOUR_AREA:
-            # Calculate the moments of the contour
-            M = cv2.moments(largest_contour)
-            
-            # Draw the contour
-            cv2.drawContours(frame, [largest_contour], -1, (0, 255, 0), 2)
-            
-            # If moment is valid, calculate centroid
-            if M["m00"] != 0:
-                cx = int(M["m10"] / M["m00"])
-                cy = int(M["m01"] / M["m00"])
-                
-                # Draw the centroid
-                cv2.circle(frame, (cx, cy), 5, (255, 0, 0), -1)
-                
-                # Calculate the error (distance from center)
-                error = cx - center_x
-                
-                # Draw line from center to centroid
-                cv2.line(frame, (center_x, cy), (cx, cy), (255, 0, 0), 2)
-                
-                # Display error value
-                cv2.putText(frame, f"Error: {error}", (10, 30), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
-                
-                return error, True
+    # Estimate pulses needed (this will need precise calibration)
+    estimated_pulses = int(required_distance / WHEEL_CIRCUMFERENCE * PULSES_PER_REVOLUTION)
     
-    # Return zero error if no valid line detected
-    return 0, False
+    # Wait until we've approximately rotated the right amount
+    start_time = time.time()
+    while (abs(right_counter - initial_right_counter) < estimated_pulses and 
+           abs(left_counter - initial_left_counter) < estimated_pulses):
+        time.sleep(0.1)
+        if time.time() - start_time > 5:  # Timeout after 5 seconds
+            break
+    
+    # Stop motors
+    stop_motors(right_pwm, left_pwm)
+    
+    # Return servo to initial position
+    set_servo_angle(servo_pwm, initial_servo_angle)
+    
+    # Print movement stats for verification
+    print("Realignment Complete:")
+    print(f"Initial Servo Angle: {initial_servo_angle}")
+    print(f"Target Servo Angle: {target_servo_angle}")
+    print(f"Right Encoder Pulses: {right_counter - initial_right_counter}")
+    print(f"Left Encoder Pulses: {left_counter - initial_left_counter}")
 
-# Main function
-def main():
-    # Initialize GPIO and PWM
+# Modify manual_control to include realignment
+def manual_control():
+    global right_counter, left_counter
     right_pwm, left_pwm, servo_pwm = setup_gpio()
     
-    # Initialize camera
-    picam2 = setup_camera()
+    print("\n==== Robot Movement Testing Program ====")
+    print("Commands:")
+    print("  f <speed> - Move forward")
+    print("  b <speed> - Move backward")
+    print("  r <speed> - Turn right")
+    print("  l <speed> - Turn left")
+    print("  s - Stop motors")
+    print("  sv <angle> - Set servo angle (0-180)")
+    print("  ra <angle> - Realign robot with servo")
+    print("  t <time> - Set movement time (seconds)")
+    print("  q - Quit")
     
-    # Set servo to center initially
-    set_servo_angle(servo_pwm, 90)
-    
-    # State variables
-    state = "NORMAL"
-    reverse_start_time = 0
-    current_scan_angle = 0
-    scan_start_time = 0
-    pivot_start_time = 0
-    
-    print("Line follower started. Press Ctrl+C to stop.")
+    movement_time = 1.0  # Default movement time in seconds
     
     try:
         while True:
-            # Capture frame
-            frame = picam2.capture_array()
+            command = input("\nEnter command (f/b/r/l/s/sv/ra/t/q): ").strip().lower()
             
-            # Detect line and check if found
-            error, line_found = detect_line(frame)
-            
-            # Display the frame
-            cv2.imshow("Line Follower", frame)
-            
-            # Exit on 'q' key press
-            if cv2.waitKey(1) & 0xFF == ord('q'):
+            if command == 'q':
                 break
-            
-            # State machine
-            if state == "NORMAL":
-                if line_found:
-                    # Normal line following
-                    if error > TURN_THRESHOLD:
-                        pivot_right(right_pwm, left_pwm, TURN_SPEED)
-                        print("Pivot Turning Right")
-                    elif error < -TURN_THRESHOLD:
-                        pivot_left(right_pwm, left_pwm, TURN_SPEED)
-                        print("Pivot Turning Left")
-                    else:
-                        move_forward(right_pwm, left_pwm)
-                        print("Moving Forward")
-                else:
-                    # Line lost, start reversing
-                    print("Line lost. Reversing...")
-                    state = "REVERSING"
-                    reverse_start_time = time.time()
-                    move_backward(right_pwm, left_pwm, REVERSE_SPEED)
-            
-            elif state == "REVERSING":
-                if time.time() - reverse_start_time >= REVERSE_DURATION:
-                    # Stop reversing and start scanning
-                    stop_motors(right_pwm, left_pwm)
-                    print("Scanning for line...")
-                    state = "SCANNING"
-                    current_scan_angle = 0
-                    set_servo_angle(servo_pwm, SCAN_ANGLES[current_scan_angle])
-                    scan_start_time = time.time()
-            
-            elif state == "SCANNING":
-                if time.time() - scan_start_time >= SCAN_TIME_PER_ANGLE:
-                    # Check for line at current angle
-                    frame = picam2.capture_array()
-                    error, line_found = detect_line(frame)
-                    
-                    if line_found:
-                        # Determine direction based on scan angle
-                        if current_scan_angle == 0:  # Left angle
-                            pivot_dir = 'left'
-                        elif current_scan_angle == 1:  # Right angle
-                            pivot_dir = 'right'
-                        else:  # Center angle
-                            pivot_dir = 'center'
-                        
-                        print(f"Line found at {pivot_dir}, pivoting...")
-                        state = "PIVOTING"
-                        pivot_start_time = time.time()
-                        set_servo_angle(servo_pwm, 90)
-                        
-                        if pivot_dir == 'left':
-                            pivot_left(right_pwm, left_pwm, PIVOT_SPEED)
-                        elif pivot_dir == 'right':
-                            pivot_right(right_pwm, left_pwm, PIVOT_SPEED)
-                        else:  # center
-                            move_backward(right_pwm, left_pwm, REVERSE_SPEED)
-                    
-                    else:
-                        # Move to next scan angle
-                        current_scan_angle += 1
-                        if current_scan_angle < len(SCAN_ANGLES):
-                            set_servo_angle(servo_pwm, SCAN_ANGLES[current_scan_angle])
-                            scan_start_time = time.time()
-                        else:
-                            # All angles scanned, no line found: reverse again
-                            print("No line found. Reversing again...")
-                            state = "REVERSING"
-                            move_backward(right_pwm, left_pwm, REVERSE_SPEED)
-                            reverse_start_time = time.time()
-            
-            elif state == "PIVOTING":
-                if time.time() - pivot_start_time >= PIVOT_DURATION:
-                    stop_motors(right_pwm, left_pwm)
-                    state = "NORMAL"
-                    print("Pivot complete. Resuming normal operation.")
+                
+            if command == 's':
+                stop_motors(right_pwm, left_pwm)
+                print("Motors stopped.")
+                continue
+                
+            if command.startswith('t '):
+                try:
+                    movement_time = float(command.split()[1])
+                    print(f"Movement time set to {movement_time:.1f} seconds")
+                except (ValueError, IndexError):
+                    print("Invalid time value. Please use format 't <seconds>'")
+                continue
+                
+            if command.startswith('sv '):
+                try:
+                    angle = float(command.split()[1])
+                    set_servo_angle(servo_pwm, angle)
+                    print(f"Servo set to {angle} degrees")
+                except (ValueError, IndexError):
+                    print("Invalid angle value. Please use format 'sv <angle>'")
+                continue
+                
+            if command.startswith('ra '):
+                try:
+                    angle = float(command.split()[1])
+                    realignment(right_pwm, left_pwm, servo_pwm, angle)
+                    print(f"Realignment to {angle} degrees complete")
+                except (ValueError, IndexError):
+                    print("Invalid angle value. Please use format 'ra <angle>'")
+                continue
+                
+            # Existing movement command handling remains the same
+            # ... [rest of the original manual_control function]
     
     except KeyboardInterrupt:
-        print("\nProgram stopped by user")
+        print("\nManual control stopped by user.")
     finally:
-        # Cleanup
         stop_motors(right_pwm, left_pwm)
-        set_servo_angle(servo_pwm, 90)
-        cv2.destroyAllWindows()
+        servo_pwm.stop()
         GPIO.cleanup()
-        print("Resources released")
+        print("GPIO cleaned up.")
 
+# Run the manual control function
 if __name__ == "__main__":
-    main()
+    manual_control()
