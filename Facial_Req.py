@@ -12,17 +12,22 @@ class SymbolRecognizer:
     def calibrate(self):
         print("Starting Calibration Stage...")
         
+        # Iterate through subfolders
         for subfolder in os.listdir(self.symbol_dir):
             subfolder_path = os.path.join(self.symbol_dir, subfolder)
             
+            # Ensure it's a directory
             if os.path.isdir(subfolder_path):
+                # Iterate through PNG files in subfolder
                 for filename in os.listdir(subfolder_path):
-                    if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+                    if filename.lower().endswith('.png'):
                         full_path = os.path.join(subfolder_path, filename)
                         
-                        template = cv2.imread(full_path, cv2.IMREAD_GRAYSCALE)
+                        # Load template in color
+                        template = cv2.imread(full_path)
                         
                         if template is not None:
+                            # Create symbol name from subfolder and filename
                             symbol_name = f"{subfolder}_{os.path.splitext(filename)[0]}"
                             self.symbol_templates[symbol_name] = template
                             print(f"Loaded template: {symbol_name}")
@@ -31,46 +36,35 @@ class SymbolRecognizer:
             print("No templates found. Exiting.")
             exit()
         print(f"Loaded {len(self.symbol_templates)} templates.")
+        input("Press Enter to continue...")
 
     def match_symbol(self, roi):
         best_match = None
         best_score = float('inf')
         
-        # Preprocess ROI
-        roi_preprocessed = cv2.resize(roi, (100, 100))
-        roi_preprocessed = cv2.GaussianBlur(roi_preprocessed, (5, 5), 0)
-        
         for name, template in self.symbol_templates.items():
             try:
-                # Resize and preprocess template
-                template_preprocessed = cv2.resize(template, (100, 100))
-                template_preprocessed = cv2.GaussianBlur(template_preprocessed, (5, 5), 0)
+                # Resize template to match ROI
+                resized_template = cv2.resize(template, (roi.shape[1], roi.shape[0]))
                 
-                # Multiple matching methods for robustness
-                methods = [
-                    cv2.TM_SQDIFF_NORMED, 
-                    cv2.TM_CCORR_NORMED, 
-                    cv2.TM_CCOEFF_NORMED
-                ]
+                # Compare color histogram
+                roi_hist = cv2.calcHist([roi], [0, 1, 2], None, [8, 8, 8], [0, 256, 0, 256, 0, 256])
+                template_hist = cv2.calcHist([resized_template], [0, 1, 2], None, [8, 8, 8], [0, 256, 0, 256, 0, 256])
                 
-                scores = []
-                for method in methods:
-                    result = cv2.matchTemplate(roi_preprocessed, template_preprocessed, method)
-                    _, score, _, _ = cv2.minMaxLoc(result)
-                    scores.append(score)
+                # Normalize histograms
+                cv2.normalize(roi_hist, roi_hist)
+                cv2.normalize(template_hist, template_hist)
                 
-                # Average score across methods
-                avg_score = np.mean(scores)
+                # Compute histogram comparison
+                score = cv2.compareHist(roi_hist, template_hist, cv2.HISTCMP_INTERSECT)
                 
-                if avg_score < best_score:
-                    best_score = avg_score
+                if score > best_score:
+                    best_score = score
                     best_match = name
-            
             except Exception as e:
                 print(f"Error matching template {name}: {e}")
         
-        # Lowered threshold for more flexible matching
-        return best_match if best_score < 0.3 else None
+        return best_match if best_score > 0.8 else None
 
 def initialize_camera():
     try:
@@ -83,7 +77,7 @@ def initialize_camera():
         return None
 
 def detect_shapes_and_symbols(frame, symbol_recognizer):
-    # Convert to grayscale
+    # Convert to grayscale for contour detection
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     
     # Threshold and find contours
@@ -96,8 +90,8 @@ def detect_shapes_and_symbols(frame, symbol_recognizer):
             # Bounding rectangle
             x, y, w, h = cv2.boundingRect(c)
             
-            # Extract ROI
-            roi = gray[y:y+h, x:x+w]
+            # Extract ROI in color
+            roi = frame[y:y+h, x:x+w]
             
             # Shape and symbol recognition
             symbol_name = symbol_recognizer.match_symbol(roi)
