@@ -156,61 +156,28 @@ def print_movement_stats():
     print(f"Left Distance: {left_distance:.2f} cm")
     print(f"Rotation Angle: {rotation_angle:.2f} degrees")
 
-# Realignment function
+# Updated Realignment function
 def Realignment(servo_pwm, right_pwm, left_pwm, original_angle):
     global right_counter, left_counter, current_servo_angle
     
-    target_angle = current_servo_angle  # Angle we're trying to align to
-    required_rotation = original_angle - target_angle
-    
-    if required_rotation == 0:
-        print("No realignment needed.")
-        return
-    
-    # Determine direction and absolute rotation
-    if required_rotation > 0:
-        direction = 'right'
-        turn_func = turn_right
-    else:
-        direction = 'left'
-        required_rotation = -required_rotation
-        turn_func = turn_left
-    
-    speed = 50  # Adjust speed as needed
-    right_counter = 0
-    left_counter = 0
-    
-    print(f"Realigning: Turning {direction} until servo returns to {original_angle}°")
-    
-    # Start turning
-    turn_func(right_pwm, left_pwm, speed)
-    
-    try:
-        while True:
-            # Calculate current rotation
-            current_rotation = calculate_rotation_angle()
-            if direction == 'left':
-                current_rotation = -current_rotation
-            
-            # Calculate how much we've turned toward the target
-            progress = current_rotation / required_rotation
-            
-            # Calculate new servo angle (approaching original)
-            new_servo_angle = target_angle + (original_angle - target_angle) * progress
-            new_servo_angle = max(0, min(180, new_servo_angle))
-            set_servo_angle(servo_pwm, new_servo_angle)
-            
-            # Check if we've completed the rotation
-            if current_rotation >= required_rotation:
-                break
-            
-            time.sleep(0.1)
-            
-    finally:
-        stop_motors(right_pwm, left_pwm)
+    # Check if angle is different from 90 degrees
+    if original_angle != 90:
+        # Move to specified angle
         set_servo_angle(servo_pwm, original_angle)
-        print("Realignment complete.")
-        print_movement_stats()
+        
+        # Wait briefly 
+        time.sleep(0.5)
+        
+        # Always return to center (90 degrees) after reaching the specified angle
+        set_servo_angle(servo_pwm, 90)
+        
+        # Reset rotation counters
+        right_counter = 0
+        left_counter = 0
+        
+        print(f"Moved to {original_angle}° and returned to center (90°)")
+    else:
+        print("Already at center position")
 
 # Main loop for manual control
 def manual_control():
