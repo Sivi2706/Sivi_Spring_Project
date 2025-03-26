@@ -12,10 +12,13 @@ class SymbolRecognizer:
     def calibrate(self):
         print("Starting Calibration Stage...")
         
+        # Iterate through subfolders
         for subfolder in os.listdir(self.symbol_dir):
             subfolder_path = os.path.join(self.symbol_dir, subfolder)
             
+            # Ensure it's a directory
             if os.path.isdir(subfolder_path):
+                # Iterate through PNG files in subfolder
                 for filename in os.listdir(subfolder_path):
                     if filename.lower().endswith('.png'):
                         full_path = os.path.join(subfolder_path, filename)
@@ -24,6 +27,7 @@ class SymbolRecognizer:
                         template = cv2.imread(full_path)
                         
                         if template is not None:
+                            # Create symbol name from subfolder and filename
                             symbol_name = f"{subfolder}_{os.path.splitext(filename)[0]}"
                             self.symbol_templates[symbol_name] = template
                             print(f"Loaded template: {symbol_name}")
@@ -36,46 +40,24 @@ class SymbolRecognizer:
 
     def match_symbol(self, roi):
         best_match = None
-        best_score = 0
+        best_score = float('inf')
         
-        # Ensure ROI is not empty
-        if roi is None or roi.size == 0:
-            return None
-
         for name, template in self.symbol_templates.items():
             try:
-                # Resize template to match ROI
+                # Resize template to match ROI dimensions
                 resized_template = cv2.resize(template, (roi.shape[1], roi.shape[0]))
                 
-                # Try both original and inverted colors
-                methods = [
-                    cv2.TM_CCOEFF_NORMED,  # Standard matching
-                    cv2.TM_CCOEFF_NORMED   # Inverted color matching
-                ]
+                # Compute template matching with color images
+                result = cv2.matchTemplate(roi, resized_template, cv2.TM_SQDIFF_NORMED)
+                _, score, _, _ = cv2.minMaxLoc(result)
                 
-                for method in methods:
-                    # Standard color matching
-                    result = cv2.matchTemplate(roi, resized_template, method)
-                    _, max_val, _, _ = cv2.minMaxLoc(result)
-                    
-                    # Update best match if score is higher
-                    if max_val > best_score:
-                        best_score = max_val
-                        best_match = name
-
-                    # Invert colors and try matching again
-                    inverted_roi = cv2.bitwise_not(roi)
-                    result_inv = cv2.matchTemplate(inverted_roi, resized_template, method)
-                    _, max_val_inv, _, _ = cv2.minMaxLoc(result_inv)
-                    
-                    if max_val_inv > best_score:
-                        best_score = max_val_inv
-                        best_match = name
-
+                if score < best_score:
+                    best_score = score
+                    best_match = name
             except Exception as e:
                 print(f"Error matching template {name}: {e}")
         
-        return best_match if best_score > 0.7 else None
+        return best_match if best_score < 0.2 else None
 
 def initialize_camera():
     try:
@@ -88,11 +70,16 @@ def initialize_camera():
         return None
 
 def detect_shapes_and_symbols(frame, symbol_recognizer):
-    # Convert to grayscale for contour detection
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    # Use red channel for thresholding to avoid grayscale conversion
+    if frame.ndim == 3 and frame.shape[2] >= 3:
+        red_channel = frame[:, :, 2]
+    else:
+        red_channel = frame.copy()
     
-    # Threshold and find contours
-    _, thresh = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
+    # Thresholding on red channel
+    _, thresh = cv2.threshold(red_channel, 127, 255, cv2.THRESH_BINARY)
+    
+    # Find contours
     cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     for c in cnts:
@@ -101,10 +88,10 @@ def detect_shapes_and_symbols(frame, symbol_recognizer):
             # Bounding rectangle
             x, y, w, h = cv2.boundingRect(c)
             
-            # Extract ROI in color
+            # Extract ROI from color frame
             roi = frame[y:y+h, x:x+w]
             
-            # Shape and symbol recognition
+            # Symbol recognition
             symbol_name = symbol_recognizer.match_symbol(roi)
             
             # Visualize results
@@ -156,6 +143,5 @@ def main():
         cv2.destroyAllWindows()
         picam2.stop()
 
-# Run the main function
 if __name__ == "__main__":
     main()
