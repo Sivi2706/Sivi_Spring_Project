@@ -26,17 +26,15 @@ SERVO_FREQ = 50           # 50Hz frequency for servo
 right_counter = 0
 left_counter = 0
 current_servo_angle = 90  # Default servo position
-right_direction = 1       # 1 for forward, -1 for backward
-left_direction = 1        # 1 for forward, -1 for backward
 
 # Encoder callback functions
 def right_encoder_callback(channel):
-    global right_counter, right_direction
-    right_counter += right_direction  # Adjust based on direction
+    global right_counter
+    right_counter += 1
 
 def left_encoder_callback(channel):
-    global left_counter, left_direction
-    left_counter += left_direction    # Adjust based on direction
+    global left_counter
+    left_counter += 1
 
 # GPIO Setup
 def setup_gpio():
@@ -83,14 +81,12 @@ def set_servo_angle(servo_pwm, angle):
     
     duty = SERVO_MIN_DUTY + (angle * (SERVO_MAX_DUTY - SERVO_MIN_DUTY) / 180.0)
     servo_pwm.ChangeDutyCycle(duty)
-    time.sleep(0.5)  # Increased delay for servo to settle
+    time.sleep(0.3)  # Give servo time to move
+    servo_pwm.ChangeDutyCycle(0)  # Stop sending signal to prevent jitter
     current_servo_angle = angle
 
-# Movement functions with direction tracking
+# Movement functions
 def move_forward(right_pwm, left_pwm, speed):
-    global right_direction, left_direction
-    right_direction = 1
-    left_direction = 1
     GPIO.output(IN1, GPIO.HIGH)
     GPIO.output(IN2, GPIO.LOW)
     GPIO.output(IN3, GPIO.LOW)
@@ -99,9 +95,6 @@ def move_forward(right_pwm, left_pwm, speed):
     left_pwm.ChangeDutyCycle(speed)
 
 def move_backward(right_pwm, left_pwm, speed):
-    global right_direction, left_direction
-    right_direction = -1
-    left_direction = -1
     GPIO.output(IN1, GPIO.LOW)
     GPIO.output(IN2, GPIO.HIGH)
     GPIO.output(IN3, GPIO.HIGH)
@@ -110,9 +103,6 @@ def move_backward(right_pwm, left_pwm, speed):
     left_pwm.ChangeDutyCycle(speed)
 
 def turn_right(right_pwm, left_pwm, speed):
-    global right_direction, left_direction
-    right_direction = 1
-    left_direction = -1
     GPIO.output(IN1, GPIO.HIGH)
     GPIO.output(IN2, GPIO.LOW)
     GPIO.output(IN3, GPIO.HIGH)
@@ -121,9 +111,6 @@ def turn_right(right_pwm, left_pwm, speed):
     left_pwm.ChangeDutyCycle(speed)
 
 def turn_left(right_pwm, left_pwm, speed):
-    global right_direction, left_direction
-    right_direction = -1
-    left_direction = 1
     GPIO.output(IN1, GPIO.LOW)
     GPIO.output(IN2, GPIO.HIGH)
     GPIO.output(IN3, GPIO.LOW)
@@ -169,11 +156,11 @@ def print_movement_stats():
     print(f"Left Distance: {left_distance:.2f} cm")
     print(f"Rotation Angle: {rotation_angle:.2f} degrees")
 
-# Improved Realignment function
+# Realignment function
 def Realignment(servo_pwm, right_pwm, left_pwm, original_angle):
     global right_counter, left_counter, current_servo_angle
     
-    target_angle = current_servo_angle
+    target_angle = current_servo_angle  # Angle we're trying to align to
     required_rotation = original_angle - target_angle
     
     if required_rotation == 0:
@@ -189,7 +176,7 @@ def Realignment(servo_pwm, right_pwm, left_pwm, original_angle):
         required_rotation = -required_rotation
         turn_func = turn_left
     
-    speed = 40  # Reduced speed for better control
+    speed = 50  # Adjust speed as needed
     right_counter = 0
     left_counter = 0
     
@@ -200,25 +187,28 @@ def Realignment(servo_pwm, right_pwm, left_pwm, original_angle):
     
     try:
         while True:
+            # Calculate current rotation
             current_rotation = calculate_rotation_angle()
-            # Adjust for direction
             if direction == 'left':
-                effective_rotation = -current_rotation
-            else:
-                effective_rotation = current_rotation
+                current_rotation = -current_rotation
             
-            # Calculate progress and set intermediate servo angle
-            progress = min(1.0, effective_rotation / required_rotation)
-            intermediate_angle = target_angle + (original_angle - target_angle) * progress
-            set_servo_angle(servo_pwm, intermediate_angle)
+            # Calculate how much we've turned toward the target
+            progress = current_rotation / required_rotation
             
-            if effective_rotation >= required_rotation:
+            # Calculate new servo angle (approaching original)
+            new_servo_angle = target_angle + (original_angle - target_angle) * progress
+            new_servo_angle = max(0, min(180, new_servo_angle))
+            set_servo_angle(servo_pwm, new_servo_angle)
+            
+            # Check if we've completed the rotation
+            if current_rotation >= required_rotation:
                 break
-            time.sleep(0.05)  # Faster checking for better responsiveness
+            
+            time.sleep(0.1)
             
     finally:
         stop_motors(right_pwm, left_pwm)
-        set_servo_angle(servo_pwm, original_angle)  # Final precise positioning
+        set_servo_angle(servo_pwm, original_angle)
         print("Realignment complete.")
         print_movement_stats()
 
