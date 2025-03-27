@@ -12,22 +12,21 @@ class SymbolRecognizer:
     def calibrate(self):
         print("Starting Calibration Stage...")
         
-        # Iterate through subfolders
         for subfolder in os.listdir(self.symbol_dir):
             subfolder_path = os.path.join(self.symbol_dir, subfolder)
             
-            # Ensure it's a directory
             if os.path.isdir(subfolder_path):
-                # Iterate through PNG files in subfolder
                 for filename in os.listdir(subfolder_path):
                     if filename.lower().endswith('.png'):
                         full_path = os.path.join(subfolder_path, filename)
                         
-                        # Load template
+                        # Enhanced template loading
                         template = cv2.imread(full_path, cv2.IMREAD_GRAYSCALE)
                         
                         if template is not None:
-                            # Create symbol name from subfolder and filename
+                            # Preprocess template
+                            template = self.preprocess_template(template)
+                            
                             symbol_name = f"{subfolder}_{os.path.splitext(filename)[0]}"
                             self.symbol_templates[symbol_name] = template
                             print(f"Loaded template: {symbol_name}")
@@ -38,9 +37,22 @@ class SymbolRecognizer:
         print(f"Loaded {len(self.symbol_templates)} templates.")
         input("Press Enter to continue...")
 
+    def preprocess_template(self, template):
+        # Advanced template preprocessing
+        # 1. Histogram equalization for better contrast
+        template = cv2.equalizeHist(template)
+        
+        # 2. Apply Gaussian blur to reduce noise
+        template = cv2.GaussianBlur(template, (3, 3), 0)
+        
+        # 3. Optional: Apply edge detection
+        # template = cv2.Canny(template, 50, 150)
+        
+        return template
+
     def match_symbol(self, roi):
-        # Debugging: print ROI shape and type
-        print(f"ROI Shape: {roi.shape}, Type: {roi.dtype}")
+        # Enhanced preprocessing of ROI
+        roi = self.preprocess_template(roi)
         
         best_match = None
         best_score = float('inf')
@@ -48,46 +60,49 @@ class SymbolRecognizer:
         
         for name, template in self.symbol_templates.items():
             try:
-                # Resize template to match ROI
-                try:
-                    resized_template = cv2.resize(template, (roi.shape[1], roi.shape[0]))
-                except Exception as resize_err:
-                    print(f"Resize error for {name}: {resize_err}")
-                    continue
+                # More flexible resizing with aspect ratio preservation
+                scale_factor = min(roi.shape[0] / template.shape[0], 
+                                   roi.shape[1] / template.shape[1])
+                new_size = (int(template.shape[1] * scale_factor), 
+                            int(template.shape[0] * scale_factor))
                 
-                # Compute template matching with multiple methods
+                resized_template = cv2.resize(template, new_size, 
+                                               interpolation=cv2.INTER_AREA)
+                
+                # Multiple matching methods for robustness
                 methods = [
                     (cv2.TM_SQDIFF_NORMED, "SQDIFF"),
                     (cv2.TM_CCORR_NORMED, "CCORR"),
                     (cv2.TM_CCOEFF_NORMED, "CCOEFF")
                 ]
                 
+                scores = []
                 for method, method_name in methods:
                     result = cv2.matchTemplate(roi, resized_template, method)
                     _, score, _, _ = cv2.minMaxLoc(result)
                     
-                    # Normalize score for consistent comparison
-                    if method in [cv2.TM_SQDIFF_NORMED]:
-                        score = 1 - score  # Invert SQDIFF score
-                    
+                    # Normalize scoring
+                    score = 1 - score if method == cv2.TM_SQDIFF_NORMED else score
+                    scores.append(score)
                     match_scores[f"{name}_{method_name}"] = score
-                    
-                    # Update best match
-                    if score < best_score:
-                        best_score = score
-                        best_match = name
+                
+                # Use average of multiple methods
+                avg_score = np.mean(scores)
+                
+                if avg_score < best_score:
+                    best_score = avg_score
+                    best_match = name
             
             except Exception as e:
                 print(f"Error matching template {name}: {e}")
         
-        # Detailed logging of match scores
+        # More detailed logging
         print("Match Scores:")
         for match, score in sorted(match_scores.items(), key=lambda x: x[1]):
             print(f"{match}: {score}")
         
-        # More flexible matching threshold
-        # Increased threshold and added print for debugging
-        if best_score < 0.5:  # Adjusted from 0.2 to 0.5
+        # More adaptive matching threshold
+        if best_score > 0.7:  # Higher threshold for more confidence
             print(f"Best Match: {best_match} with score {best_score}")
             return best_match
         else:
