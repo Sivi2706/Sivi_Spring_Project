@@ -13,11 +13,10 @@ class SymbolRecognizer:
     def calibrate(self):
         print("Starting Calibration Stage...")
 
-        # Iterate through subfolders
+        # Iterate through subfolders in symbol_dir
         for subfolder in os.listdir(self.symbol_dir):
             subfolder_path = os.path.join(self.symbol_dir, subfolder)
 
-            # Ensure it's a directory
             if os.path.isdir(subfolder_path):
                 # Iterate through PNG files in subfolder
                 for filename in os.listdir(subfolder_path):
@@ -28,11 +27,12 @@ class SymbolRecognizer:
                         template_color = cv2.imread(full_path, cv2.IMREAD_COLOR)
 
                         if template_color is not None:
-                            # Also keep a grayscale version for matching
+                            # Convert to grayscale for matching
                             template_gray = cv2.cvtColor(template_color, cv2.COLOR_BGR2GRAY)
 
                             # Create symbol name from subfolder and filename
                             symbol_name = f"{subfolder}_{os.path.splitext(filename)[0]}"
+
                             # Store both color and gray versions
                             self.symbol_templates[symbol_name] = (template_color, template_gray)
                             print(f"Loaded template: {symbol_name}")
@@ -45,9 +45,9 @@ class SymbolRecognizer:
 
     def match_symbol(self, roi_gray):
         """
-        Attempt to match the given grayscale ROI with one of the stored
-        templates. Returns the best matching symbol name if below a
-        similarity threshold, otherwise None.
+        Attempt to match the given grayscale ROI with one of the stored templates.
+        Returns the best matching symbol name if below a similarity threshold,
+        otherwise None.
         """
         best_match = None
         best_score = float('inf')
@@ -71,9 +71,17 @@ class SymbolRecognizer:
         return best_match if best_score < 0.2 else None
 
 def initialize_camera():
+    """
+    Initializes the PiCamera2 in BGR888 mode to ensure a 3-channel image
+    and avoid broadcasting errors with 4-channel frames.
+    """
     try:
         picam2 = Picamera2()
-        picam2.configure(picam2.create_preview_configuration(main={"size": (640, 480)}))
+        # Force 640x480 BGR888 output
+        config = picam2.create_preview_configuration(
+            main={"size": (640, 480), "format": "BGR888"}
+        )
+        picam2.configure(config)
         picam2.start()
         return picam2
     except RuntimeError as e:
@@ -84,14 +92,14 @@ def detect_shapes_and_symbols(frame, symbol_recognizer):
     # Convert to grayscale for contour detection
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-    # Threshold and find contours (simple segmentation)
+    # Threshold and find contours
     _, thresh = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
     cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     for c in cnts:
-        # Filter contours by area to ignore small noise
+        # Filter contours by area
         if cv2.contourArea(c) > 500:
-            # Get bounding rectangle
+            # Bounding rectangle
             x, y, w, h = cv2.boundingRect(c)
 
             # Extract grayscale ROI for matching
@@ -101,19 +109,20 @@ def detect_shapes_and_symbols(frame, symbol_recognizer):
             symbol_name = symbol_recognizer.match_symbol(roi_gray)
 
             if symbol_name:
-                # Retrieve the color template and overlay it
+                # Retrieve the color template
                 template_color, template_gray = symbol_recognizer.symbol_templates[symbol_name]
+                # Resize to match the bounding box
                 resized_template_color = cv2.resize(template_color, (w, h))
 
-                # Overwrite the region in the *color* frame with the color template
+                # Overlay the color template onto the original frame
                 frame[y:y+h, x:x+w] = resized_template_color
 
-                # Optionally, draw a bounding box and label on top
+                # Optionally, draw bounding box and label
                 cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
                 cv2.putText(frame, symbol_name, (x, y - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
             else:
-                # Unknown symbol, just draw bounding box
+                # Unknown symbol
                 cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 0, 0), 2)
                 cv2.putText(frame, "Unknown Symbol", (x, y - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
@@ -137,10 +146,10 @@ def main():
             # Capture frame from the camera
             frame = picam2.capture_array()
 
-            # Flip the frame vertically/horizontally if needed
+            # Flip frame if needed (vertical flip in this example)
             frame = cv2.flip(frame, -1)
 
-            # Detect shapes and symbols, overlay original color symbol if matched
+            # Detect shapes and symbols, overlay original color if matched
             output_frame = detect_shapes_and_symbols(frame, symbol_recognizer)
 
             # Display the frame
