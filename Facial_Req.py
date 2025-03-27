@@ -69,78 +69,21 @@ def initialize_camera():
         print(f"Camera initialization failed: {e}")
         return None
 
-def detect_shape_color(contour):
-    """
-    Determine shape based on number of vertices and color characteristics.
-    """
-    # Approximate the contour to reduce vertices
-    perimeter = cv2.arcLength(contour, True)
-    approx = cv2.approxPolyDP(contour, 0.04 * perimeter, True)
-    
-    # Number of vertices
-    vertex_count = len(approx)
-    
-    # Area of the contour
-    area = cv2.contourArea(contour)
-    
-    # Shape determination logic
-    if vertex_count == 3:
-        return "Triangle"
-    elif vertex_count == 4:
-        # Check aspect ratio for more accurate rectangle/square detection
-        x, y, w, h = cv2.boundingRect(contour)
-        aspect_ratio = float(w) / h
-        return "Square" if 0.9 <= aspect_ratio <= 1.1 else "Rectangle"
-    elif vertex_count == 5:
-        # Improved pentagon detection
-        # Check for more specific pentagon characteristics
-        if 0.8 * area < cv2.contourArea(cv2.convexHull(contour)) < 1.2 * area:
-            return "Pentagon"
-    elif vertex_count >= 6:
-        # Circle or approximate circle detection
-        hull = cv2.convexHull(contour)
-        hull_area = cv2.contourArea(hull)
-        
-        # Check if the contour is close to a perfect circle
-        if area / hull_area > 0.85:
-            return "Circle"
-    
-    return "Unknown"
-
-def detect_shapes_and_symbols(frame, symbol_recognizer):
-    # Convert to grayscale and color
+def process_edge_detection(frame):
+    # Convert to grayscale
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     
-    # Threshold and find contours
-    _, thresh = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
-    cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # Apply Gaussian blur to reduce noise
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     
-    for c in cnts:
-        # Filter contours by area
-        if cv2.contourArea(c) > 500:
-            # Determine shape
-            shape = detect_shape_color(c)
-            
-            # Bounding rectangle
-            x, y, w, h = cv2.boundingRect(c)
-            
-            # Extract ROI
-            roi = gray[y:y+h, x:x+w]
-            
-            # Symbol recognition
-            symbol_name = symbol_recognizer.match_symbol(roi)
-            
-            # Visualize results
-            cv2.drawContours(frame, [c], -1, (0, 255, 0), 2)
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 0, 0), 2)
-            
-            # Display recognized shape and symbol
-            label = f"{shape}: {symbol_name}" if symbol_name else shape
-            cv2.putText(frame, label, (x, y - 10), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+    # Apply Canny edge detection
+    # Lower threshold is 50, upper threshold is 150
+    edges = cv2.Canny(blurred, 50, 150)
     
-    return frame
+    # Create a color version of edges for better visualization
+    edges_colored = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
+    
+    return edges_colored
 
 def main():
     # Initialize symbol recognizer
@@ -162,11 +105,11 @@ def main():
             # Flip the frame vertically (optional, depending on camera orientation)
             frame = cv2.flip(frame, -1)
 
-            # Detect shapes and symbols
-            output_frame = detect_shapes_and_symbols(frame, symbol_recognizer)
+            # Perform edge detection
+            edge_frame = process_edge_detection(frame)
 
-            # Display the frame
-            cv2.imshow("Camera Feed", output_frame)
+            # Display the edge detection frame
+            cv2.imshow("Edge Detection", edge_frame)
 
             # Exit on 'q' key press
             if cv2.waitKey(1) & 0xFF == ord("q"):
