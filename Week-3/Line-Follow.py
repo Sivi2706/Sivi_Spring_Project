@@ -16,7 +16,7 @@ ServoMotor = 18           # Servo motor PWM for the camera
 WHEEL_DIAMETER = 4.05      # cm
 PULSES_PER_REVOLUTION = 20
 WHEEL_CIRCUMFERENCE = np.pi * WHEEL_DIAMETER  # cm
-
+ 
 # Servo motor parameters
 SERVO_MIN_DUTY = 2.5       # Duty cycle for 0 degrees
 SERVO_MAX_DUTY = 12.5      # Duty cycle for 180 degrees
@@ -31,7 +31,7 @@ FRAME_HEIGHT = 480        # Camera frame height
 
 # Threshold for turning
 TURN_THRESHOLD = 100      # Error threshold for pivoting
-
+ 
 # Recovery parameters
 REVERSE_DURATION = 0.5    # Seconds to reverse
 REVERSE_SPEED = 40        # Speed when reversing
@@ -59,7 +59,7 @@ def setup_gpio():
     GPIO.setwarnings(False)
     
     # Motor pins setup
-    aplicativos.setup(IN1, GPIO.OUT)
+    GPIO.setup(IN1, GPIO.OUT)
     GPIO.setup(IN2, GPIO.OUT)
     GPIO.setup(IN3, GPIO.OUT)
     GPIO.setup(IN4, GPIO.OUT)
@@ -79,7 +79,7 @@ def setup_gpio():
     left_pwm = GPIO.PWM(ENB, 1000)
     right_pwm.start(0)
     left_pwm.start(0)
-    
+        
     # Set up PWM for servo
     GPIO.setup(ServoMotor, GPIO.OUT)
     servo_pwm = GPIO.PWM(ServoMotor, SERVO_FREQ)
@@ -179,16 +179,15 @@ def setup_camera():
 def detect_line(frame, target_color="red"):
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     
-    # Define HSV color ranges for red, green, yellow, black, and blue
+    # Define HSV color ranges for red, green, yellow, and black
     color_ranges = {
         "red": [
-            (np.array([0, 140, 80]), np.array([5, 255, 255])),    # Narrowed hue range
-            (np.array([175, 140, 80]), np.array([180, 255, 255])) # Increased saturation
+            (np.array([0, 120, 70]), np.array([10, 255, 255])),
+            (np.array([170, 120, 70]), np.array([180, 255, 255]))
         ],
         "green": [(np.array([40, 40, 40]), np.array([80, 255, 255]))],
         "yellow": [(np.array([20, 100, 100]), np.array([30, 255, 255]))],
-        "black": [(np.array([0, 0, 0]), np.array([180, 255, 120]))],
-        "blue": [(np.array([100, 100, 50]), np.array([130, 255, 255]))]
+        "black": [(np.array([0, 0, 0]), np.array([180, 255, 120]))]
     }
     
     # Define outline colors for each line color
@@ -196,46 +195,10 @@ def detect_line(frame, target_color="red"):
         "red": (255, 0, 0),    # Blue outline for red line
         "green": (0, 0, 255),  # Red outline for green line
         "yellow": (0, 255, 0), # Green outline for yellow line
-        "black": (255, 255, 255), # White outline for black line
-        "blue": (0, 255, 255)  # Cyan outline for blue line
+        "black": (255, 255, 255) # White outline for black line
     }
     
-    # Analyze all colors for debugging
-    color_data = {}
-    for color, ranges in color_ranges.items():
-        mask = np.zeros_like(hsv[:, :, 0])
-        for lower, upper in ranges:
-            mask |= cv2.inRange(hsv, lower, upper)
-        white_pixels = np.sum(mask == 255)
-        total_pixels = FRAME_WIDTH * FRAME_HEIGHT
-        white_pixel_percentage = (white_pixels / total_pixels) * 100 if total_pixels > 0 else 0
-        
-        hsv_values = []
-        if white_pixels > 0:
-            white_pixel_coords = np.where(mask == 255)
-            sample_indices = np.random.choice(len(white_pixel_coords[0]), size=min(10, len(white_pixel_coords[0])), replace=False)
-            for idx in sample_indices:
-                y, x = white_pixel_coords[0][idx], white_pixel_coords[1][idx]
-                hsv_pixel = hsv[y, x]
-                hsv_values.append(hsv_pixel.tolist())
-        
-        color_data[color] = {
-            "white_pixels": white_pixels,
-            "percentage": white_pixel_percentage,
-            "avg_hsv": np.mean(hsv_values, axis=0) if hsv_values else None
-        }
-    
-    # Print color data for debugging
-    print("Color Detection Data:")
-    for color, data in color_data.items():
-        print(f"  {color.capitalize()}:")
-        print(f"    White Pixels: {data['white_pixels']} ({data['percentage']:.2f}% of frame)")
-        if data['avg_hsv'] is not None:
-            print(f"    Average HSV: H={data['avg_hsv'][0]:.1f}, S={data['avg_hsv'][1]:.1f}, V={data['avg_hsv'][2]:.1f}")
-        else:
-            print("    No HSV samples collected")
-    
-    # Create mask for the target color
+    # Create mask based on target color
     mask = np.zeros_like(hsv[:, :, 0])
     for lower, upper in color_ranges.get(target_color, color_ranges["black"]):
         mask |= cv2.inRange(hsv, lower, upper)
@@ -244,6 +207,30 @@ def detect_line(frame, target_color="red"):
     kernel = np.ones((5, 5), np.uint8)
     mask = cv2.erode(mask, kernel, iterations=1)
     mask = cv2.dilate(mask, kernel, iterations=1)
+    
+    # Read color data from the mask
+    white_pixels = np.sum(mask == 255)  # Count white pixels in the mask
+    total_pixels = FRAME_WIDTH * FRAME_HEIGHT
+    white_pixel_percentage = (white_pixels / total_pixels) * 100 if total_pixels > 0 else 0
+    
+    # Sample HSV values from the original HSV frame where the mask is white
+    hsv_values = []
+    if white_pixels > 0:
+        white_pixel_coords = np.where(mask == 255)
+        sample_indices = np.random.choice(len(white_pixel_coords[0]), size=min(10, len(white_pixel_coords[0])), replace=False)
+        for idx in sample_indices:
+            y, x = white_pixel_coords[0][idx], white_pixel_coords[1][idx]
+            hsv_pixel = hsv[y, x]
+            hsv_values.append(hsv_pixel.tolist())  # [H, S, V]
+    
+    # Print color data
+    print(f"Color Data for {target_color.capitalize()} Line:")
+    print(f"  White Pixels: {white_pixels} ({white_pixel_percentage:.2f}% of frame)")
+    if hsv_values:
+        avg_hsv = np.mean(hsv_values, axis=0)
+        print(f"  Average HSV of detected pixels: H={avg_hsv[0]:.1f}, S={avg_hsv[1]:.1f}, V={avg_hsv[2]:.1f}")
+    else:
+        print("  No HSV samples collected (no white pixels in mask)")
     
     # Find contours
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -293,8 +280,8 @@ def main():
     scan_start_time = 0
     detected_scan_angle = None
     
-    # Target color to track (can be "red", "green", "yellow", or "blue")
-    target_color = "red"  # Change this to "green", "yellow", or "blue" as needed
+    # Target color to track (can be "red", "green", or "yellow")
+    target_color = "red"  # Change this to "green" or "yellow" as needed
     
     print(f"Line follower started, tracking {target_color} line. Press 'q' in the display window or Ctrl+C to stop.")
     
