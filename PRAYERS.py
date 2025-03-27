@@ -2,11 +2,11 @@ import numpy as np
 import cv2
 import os
 from picamera2 import Picamera2
+import time
 
 class SymbolRecognizer:
     def __init__(self, symbol_dir):
         self.symbol_dir = symbol_dir
-        # Dictionary: symbol_name -> (color_template (RGB), gray_template, contour)
         self.symbol_templates = {}
         self.calibrate()
 
@@ -15,12 +15,12 @@ class SymbolRecognizer:
         print("\nInitializing camera for calibration...")
         
         # Initialize camera for calibration
-        picam2 = Picamera2()
-        config = picam2.create_preview_configuration(
+        calib_cam = Picamera2()
+        config = calib_cam.create_preview_configuration(
             main={"size": (640, 480), "format": "BGR888"}
         )
-        picam2.configure(config)
-        picam2.start()
+        calib_cam.configure(config)
+        calib_cam.start()
 
         # Create symbol directory if it doesn't exist
         os.makedirs(self.symbol_dir, exist_ok=True)
@@ -55,7 +55,7 @@ class SymbolRecognizer:
             skip_symbol = False
 
             while True:
-                frame = picam2.capture_array()
+                frame = calib_cam.capture_array()
                 frame = cv2.flip(frame, -1)  # Adjust rotation if needed
                 
                 display_frame = frame.copy()
@@ -97,7 +97,7 @@ class SymbolRecognizer:
                     break
                 elif key == ord('x'):
                     print("Exiting calibration early...")
-                    picam2.stop()
+                    calib_cam.stop()
                     cv2.destroyAllWindows()
                     return
 
@@ -106,7 +106,7 @@ class SymbolRecognizer:
                 continue
 
         # Stop calibration camera
-        picam2.stop()
+        calib_cam.stop()
         cv2.destroyAllWindows()
 
         # Load templates from captured images
@@ -162,16 +162,13 @@ class SymbolRecognizer:
 
 def process_reference_image(template_color_rgb):
     """Process reference image in RGB and return BGR for display"""
-    # Convert RGB to grayscale
     gray_template = cv2.cvtColor(template_color_rgb, cv2.COLOR_RGB2GRAY)
     _, thresh_template = cv2.threshold(gray_template, 127, 255, cv2.THRESH_BINARY)
     contours, _ = cv2.findContours(thresh_template, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    # Draw on RGB image
     ref_img_with_contours = template_color_rgb.copy()
-    cv2.drawContours(ref_img_with_contours, contours, -1, (0, 255, 0), 2)  # Green in RGB
+    cv2.drawContours(ref_img_with_contours, contours, -1, (0, 255, 0), 2)
     
-    # Convert to BGR for OpenCV display
     return cv2.cvtColor(ref_img_with_contours, cv2.COLOR_RGB2BGR)
 
 def initialize_camera():
@@ -182,13 +179,14 @@ def initialize_camera():
         )
         picam2.configure(config)
         picam2.start()
+        # Add small delay to allow camera to initialize
+        time.sleep(2)
         return picam2
-    except RuntimeError as e:
+    except Exception as e:
         print(f"Camera initialization failed: {e}")
         return None
 
 def detect_shapes_and_symbols(frame, symbol_recognizer):
-    # Camera feed is in BGR format
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     _, thresh = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
     cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -199,7 +197,7 @@ def detect_shapes_and_symbols(frame, symbol_recognizer):
     for c in cnts:
         if cv2.contourArea(c) > 500:
             x, y, w, h = cv2.boundingRect(c)
-            cv2.drawContours(frame, [c], -1, (0, 255, 0), 2)  # Green in BGR
+            cv2.drawContours(frame, [c], -1, (0, 255, 0), 2)
             roi_gray = gray[y:y+h, x:x+w]
 
             symbol_name, score = symbol_recognizer.match_symbol(roi_gray)
@@ -226,21 +224,20 @@ def detect_shapes_and_symbols(frame, symbol_recognizer):
 def main():
     symbol_dir = '/home/raspberry/Documents/S1V1/Sivi_Spring_Project/Symbol-images'
     symbol_recognizer = SymbolRecognizer(symbol_dir)
+    
+    # Initialize detection camera
     picam2 = initialize_camera()
-
     if picam2 is None:
         return
 
     try:
         while True:
-            frame = picam2.capture_array()  # BGR format from camera
+            frame = picam2.capture_array()
             frame = cv2.flip(frame, -1)
             output_frame, best_symbol = detect_shapes_and_symbols(frame, symbol_recognizer)
 
-            # Show live feed (already in BGR)
             cv2.imshow("Camera Feed", output_frame)
 
-            # Show reference image if match found
             if best_symbol:
                 template_color_rgb = symbol_recognizer.symbol_templates[best_symbol][0]
                 reference_display = process_reference_image(template_color_rgb)
