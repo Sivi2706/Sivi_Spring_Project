@@ -39,25 +39,60 @@ class SymbolRecognizer:
         input("Press Enter to continue...")
 
     def match_symbol(self, roi):
+        # Debugging: print ROI shape and type
+        print(f"ROI Shape: {roi.shape}, Type: {roi.dtype}")
+        
         best_match = None
         best_score = float('inf')
+        match_scores = {}
         
         for name, template in self.symbol_templates.items():
             try:
                 # Resize template to match ROI
-                resized_template = cv2.resize(template, (roi.shape[1], roi.shape[0]))
+                try:
+                    resized_template = cv2.resize(template, (roi.shape[1], roi.shape[0]))
+                except Exception as resize_err:
+                    print(f"Resize error for {name}: {resize_err}")
+                    continue
                 
-                # Compute template matching
-                result = cv2.matchTemplate(roi, resized_template, cv2.TM_SQDIFF_NORMED)
-                _, score, _, _ = cv2.minMaxLoc(result)
+                # Compute template matching with multiple methods
+                methods = [
+                    (cv2.TM_SQDIFF_NORMED, "SQDIFF"),
+                    (cv2.TM_CCORR_NORMED, "CCORR"),
+                    (cv2.TM_CCOEFF_NORMED, "CCOEFF")
+                ]
                 
-                if score < best_score:
-                    best_score = score
-                    best_match = name
+                for method, method_name in methods:
+                    result = cv2.matchTemplate(roi, resized_template, method)
+                    _, score, _, _ = cv2.minMaxLoc(result)
+                    
+                    # Normalize score for consistent comparison
+                    if method in [cv2.TM_SQDIFF_NORMED]:
+                        score = 1 - score  # Invert SQDIFF score
+                    
+                    match_scores[f"{name}_{method_name}"] = score
+                    
+                    # Update best match
+                    if score < best_score:
+                        best_score = score
+                        best_match = name
+            
             except Exception as e:
                 print(f"Error matching template {name}: {e}")
         
-        return best_match if best_score < 0.2 else None
+        # Detailed logging of match scores
+        print("Match Scores:")
+        for match, score in sorted(match_scores.items(), key=lambda x: x[1]):
+            print(f"{match}: {score}")
+        
+        # More flexible matching threshold
+        # Increased threshold and added print for debugging
+        if best_score < 0.5:  # Adjusted from 0.2 to 0.5
+            print(f"Best Match: {best_match} with score {best_score}")
+            return best_match
+        else:
+            print(f"No good match found. Best score: {best_score}")
+            return None
 
 def initialize_camera():
     try:
