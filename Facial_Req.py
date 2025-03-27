@@ -66,28 +66,16 @@ class SymbolRecognizer:
             except Exception as e:
                 print(f"Error matching template {name}: {e}")
 
-        # Return the best match and its score
+        # Return the best match and its score if below threshold
         if best_score < 0.2:
             return best_match, best_score
         else:
             return None, float('inf')
 
-def process_reference_image(template_color):
-    """
-    Convert the reference (template) image to grayscale, threshold it, find contours,
-    and draw them in green on top of the color image to show outlines.
-    """
-    gray_template = cv2.cvtColor(template_color, cv2.COLOR_BGR2GRAY)
-    _, thresh_template = cv2.threshold(gray_template, 127, 255, cv2.THRESH_BINARY)
-    contours, _ = cv2.findContours(thresh_template, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    ref_img_with_contours = template_color.copy()
-    cv2.drawContours(ref_img_with_contours, contours, -1, (0, 255, 0), 2)
-    return ref_img_with_contours
-
 def initialize_camera():
     """
-    Initializes the PiCamera2 in BGR888 mode to ensure a 3-channel image.
+    Initializes the PiCamera2 in BGR888 mode to ensure a 3-channel image,
+    and applies white balance settings (AWB or manual color gains).
     """
     try:
         picam2 = Picamera2()
@@ -97,6 +85,23 @@ def initialize_camera():
         )
         picam2.configure(config)
         picam2.start()
+
+        # --------------------------------------------------------------------
+        # Option A: Use automatic white balance with a specific mode
+        # --------------------------------------------------------------------
+        # picam2.set_controls({
+        #     "AwbEnable": True,
+        #     "AwbMode": "sunlight"   # Try "auto", "sunlight", "cloudy", "tungsten", etc.
+        # })
+
+        # --------------------------------------------------------------------
+        # Option B: Disable AWB and use manual color gains
+        # --------------------------------------------------------------------
+        picam2.set_controls({
+            "AwbEnable": False,
+            "ColourGains": (1.2, 1.1)  # Adjust these gains to suit your environment
+        })
+
         return picam2
     except RuntimeError as e:
         print(f"Camera initialization failed: {e}")
@@ -107,7 +112,7 @@ def detect_shapes_and_symbols(frame, symbol_recognizer):
     1. Finds contours in the live frame.
     2. For each contour, tries to match a symbol.
     3. Labels the contour in the live feed (but does NOT overlay the template).
-    4. Tracks the single best match (lowest score) in this frame, and returns that name.
+    4. Tracks the single best match in this frame.
     """
     # Convert to grayscale for contour detection
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -126,7 +131,7 @@ def detect_shapes_and_symbols(frame, symbol_recognizer):
             # Get bounding rectangle for the contour
             x, y, w, h = cv2.boundingRect(c)
 
-            # Draw the contour (green outline) on the live feed
+            # Draw the contour on the live feed
             cv2.drawContours(frame, [c], -1, (0, 255, 0), 2)
 
             # Extract grayscale ROI for matching
@@ -151,12 +156,25 @@ def detect_shapes_and_symbols(frame, symbol_recognizer):
 
     return frame, best_frame_symbol
 
+def process_reference_image(template_color):
+    """
+    Convert the reference (template) image to grayscale, threshold it, find contours,
+    and draw them in green on top of the color image to show outlines.
+    """
+    gray_template = cv2.cvtColor(template_color, cv2.COLOR_BGR2GRAY)
+    _, thresh_template = cv2.threshold(gray_template, 127, 255, cv2.THRESH_BINARY)
+    contours, _ = cv2.findContours(thresh_template, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    ref_img_with_contours = template_color.copy()
+    cv2.drawContours(ref_img_with_contours, contours, -1, (0, 255, 0), 2)
+    return ref_img_with_contours
+
 def main():
     # Initialize symbol recognizer with the directory containing template images
     symbol_dir = '/home/raspberry/Documents/S1V1/Sivi_Spring_Project/Symbol-images'
     symbol_recognizer = SymbolRecognizer(symbol_dir)
 
-    # Initialize the camera
+    # Initialize the camera with white balance adjustments
     picam2 = initialize_camera()
     if picam2 is None:
         print("Exiting program. Camera could not be initialized.")
