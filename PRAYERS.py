@@ -7,6 +7,7 @@ import time
 class SymbolRecognizer:
     def __init__(self, symbol_dir):
         self.symbol_dir = symbol_dir
+        self.raspi_img_dir = os.path.join(os.path.dirname(symbol_dir), "raspi-img")
         self.symbol_templates = {}
         self.calibrate()
 
@@ -22,8 +23,9 @@ class SymbolRecognizer:
         calib_cam.configure(config)
         calib_cam.start()
 
-        # Create symbol directory if it doesn't exist
+        # Create symbol directories if they don't exist
         os.makedirs(self.symbol_dir, exist_ok=True)
+        os.makedirs(self.raspi_img_dir, exist_ok=True)
 
         # Get list of existing subfolders or create default ones
         subfolders = [d for d in os.listdir(self.symbol_dir) 
@@ -43,15 +45,16 @@ class SymbolRecognizer:
         # Capture samples for each subfolder
         for subfolder in subfolders:
             subfolder_path = os.path.join(self.symbol_dir, subfolder)
+            raspi_subfolder_path = os.path.join(self.raspi_img_dir, subfolder)
             os.makedirs(subfolder_path, exist_ok=True)
+            os.makedirs(raspi_subfolder_path, exist_ok=True)
             
             print(f"\n=== Calibrating {subfolder} ===")
-            print("Position the symbol in view. Press 's' to start capturing 25 samples.")
+            print("Position the symbol in view. Press 's' to capture the image.")
             print("Press 'q' to skip to next symbol or 'x' to exit calibration.")
             
             cv2.namedWindow("Calibration Feed", cv2.WINDOW_NORMAL)
             capturing = False
-            capture_count = 0
             skip_symbol = False
 
             while True:
@@ -61,25 +64,23 @@ class SymbolRecognizer:
                 display_frame = frame.copy()
                 
                 if capturing:
-                    # Save captured frame
-                    filename = os.path.join(subfolder_path, f"sample_{capture_count:03d}.png")
-                    cv2.imwrite(filename, frame)
-                    capture_count += 1
+                    # Save captured frame to both directories
+                    timestamp = int(time.time())
+                    filename = f"{subfolder}_{timestamp}.png"
                     
-                    # Display capture progress
-                    cv2.putText(display_frame, f"Captured: {capture_count}/25", (10, 30),
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                    cv2.putText(display_frame, "Capturing...", (10, 60),
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                    # Save to original symbol directory
+                    cv2.imwrite(os.path.join(subfolder_path, filename), frame)
                     
-                    if capture_count >= 25:
-                        capturing = False
-                        print(f"Successfully captured 25 samples for {subfolder}")
-                        break
+                    # Save to raspi-img directory
+                    cv2.imwrite(os.path.join(raspi_subfolder_path, filename), frame)
+                    
+                    print(f"Captured 1 image for {subfolder}")
+                    capturing = False
+                    break
                 else:
                     cv2.putText(display_frame, f"Calibrating: {subfolder}", (10, 30),
                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-                    cv2.putText(display_frame, "Press 's' to start capturing", (10, 60),
+                    cv2.putText(display_frame, "Press 's' to capture image", (10, 60),
                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
                     cv2.putText(display_frame, "Press 'q' to skip", (10, 90),
                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
@@ -89,8 +90,7 @@ class SymbolRecognizer:
 
                 if key == ord('s') and not capturing:
                     capturing = True
-                    capture_count = 0
-                    print(f"Starting capture for {subfolder}...")
+                    print(f"Capturing image for {subfolder}...")
                 elif key == ord('q'):
                     print(f"Skipping {subfolder}")
                     skip_symbol = True
