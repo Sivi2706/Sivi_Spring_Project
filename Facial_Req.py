@@ -70,14 +70,26 @@ class SymbolRecognizer:
         # Return the best match if it's reasonably close
         return best_match if best_score < 0.2 else None
 
+def process_reference_image(template_color):
+    """
+    Process the full reference (template) image to draw its outlines.
+    The image is converted to grayscale, thresholded, and its contours are drawn.
+    """
+    gray_template = cv2.cvtColor(template_color, cv2.COLOR_BGR2GRAY)
+    _, thresh_template = cv2.threshold(gray_template, 127, 255, cv2.THRESH_BINARY)
+    contours, _ = cv2.findContours(thresh_template, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    ref_img_with_contours = template_color.copy()
+    cv2.drawContours(ref_img_with_contours, contours, -1, (0, 255, 0), 2)
+    return ref_img_with_contours
+
 def initialize_camera():
     """
-    Initializes the PiCamera2 in BGR888 mode to ensure a 3-channel image
-    and avoid broadcasting errors with 4-channel frames.
+    Initializes the PiCamera2 in BGR888 mode to ensure a 3-channel image.
     """
     try:
         picam2 = Picamera2()
-        # Force 640x480 BGR888 output
+        # Force 640x480 BGR888 output to get a 3-channel image
         config = picam2.create_preview_configuration(
             main={"size": (640, 480), "format": "BGR888"}
         )
@@ -89,71 +101,88 @@ def initialize_camera():
         return None
 
 def detect_shapes_and_symbols(frame, symbol_recognizer):
+    """
+    Processes the live frame to detect shapes, match symbols, overlay the reference
+    template on the live feed, and also return a processed reference image with outlines.
+    """
+    reference_display = None
     # Convert to grayscale for contour detection
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-    # Threshold and find contours
+    # Threshold and find contours in the live frame
     _, thresh = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
     cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     for c in cnts:
-        # Filter contours by area
+        # Filter out small contours
         if cv2.contourArea(c) > 500:
-            # Bounding rectangle
+            # Get bounding rectangle for the contour
             x, y, w, h = cv2.boundingRect(c)
 
             # Extract grayscale ROI for matching
             roi_gray = gray[y:y+h, x:x+w]
 
-            # Attempt to match symbol
+            # Attempt to match symbol using the grayscale ROI
             symbol_name = symbol_recognizer.match_symbol(roi_gray)
 
             if symbol_name:
-                # Retrieve the color template
+                # Retrieve the color template for this symbol
                 template_color, template_gray = symbol_recognizer.symbol_templates[symbol_name]
-                # Resize to match the bounding box
+                # Resize the template to match the detected bounding box size
                 resized_template_color = cv2.resize(template_color, (w, h))
 
-                # Overlay the color template onto the original frame
+                # Overlay the resized color template on the live feed
                 frame[y:y+h, x:x+w] = resized_template_color
 
-                # Optionally, draw bounding box and label
+                # Draw bounding box and label on the live frame
                 cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
                 cv2.putText(frame, symbol_name, (x, y - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+
+                # Process the full reference image to show its outlines
+                reference_display = process_reference_image(template_color)
             else:
-                # Unknown symbol
+                # For unknown symbols, draw a blue bounding box with label
                 cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 0, 0), 2)
                 cv2.putText(frame, "Unknown Symbol", (x, y - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
-    return frame
+    return frame, reference_display
 
 def main():
-    # Initialize symbol recognizer
+    # Initialize symbol recognizer with the directory containing template images
     symbol_dir = '/home/raspberry/Documents/S1V1/Sivi_Spring_Project/Symbol-images'
     symbol_recognizer = SymbolRecognizer(symbol_dir)
 
-    # Initialize camera
+    # Initialize the camera
     picam2 = initialize_camera()
     if picam2 is None:
         print("Exiting program. Camera could not be initialized.")
         return
 
     try:
-        # Main processing loop
         while True:
             # Capture frame from the camera
             frame = picam2.capture_array()
 
-            # Flip frame if needed (vertical flip in this example)
+            # Flip frame if needed (vertical/horizontal flip as required)
             frame = cv2.flip(frame, -1)
 
-            # Detect shapes and symbols, overlay original color if matched
-            output_frame = detect_shapes_and_symbols(frame, symbol_recognizer)
+            # Process the frame to detect shapes, symbols, and get the reference display
+            output_frame, reference_display = detect_shapes_and_symbols(frame, symbol_recognizer)
 
-            # Display the frame
+            # Show the live feed with outlines and identifiers
             cv2.imshow("Camera Feed", output_frame)
+
+            # Show the processed reference image (if a symbol was matched)
+            if reference_display is not None:
+                cv2.imshow("Reference Feed", reference_display)
+            else:
+                # If no match, show a black image or a message
+                blank_ref = np.zeros((300, 300, 3), dtype=np.uint8)
+                cv2.putText(blank_ref, "No match", (50, 150),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                cv2.imshow("Reference Feed", blank_ref)
 
             # Exit on 'q' key press
             if cv2.waitKey(1) & 0xFF == ord("q"):
@@ -163,10 +192,9 @@ def main():
         print(f"An error occurred: {e}")
 
     finally:
-        # Cleanup
+        # Cleanup resources
         cv2.destroyAllWindows()
         picam2.stop()
 
-# Run the main function
 if __name__ == "__main__":
     main()
