@@ -102,10 +102,10 @@ def initialize_camera():
 
 def detect_shapes_and_symbols(frame, symbol_recognizer):
     """
-    Processes the live frame to detect shapes, match symbols, overlay the reference
-    template on the live feed, and also return a processed reference image with outlines.
+    Processes the live frame to detect shapes, match symbols, and return
+    the name of the matched symbol (so we can display the reference image).
+    We do NOT overlay the reference image in the live feed—only bounding boxes.
     """
-    reference_display = None
     # Convert to grayscale for contour detection
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
@@ -113,11 +113,18 @@ def detect_shapes_and_symbols(frame, symbol_recognizer):
     _, thresh = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
     cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
+    matched_symbol_name = None
+
     for c in cnts:
         # Filter out small contours
         if cv2.contourArea(c) > 500:
             # Get bounding rectangle for the contour
             x, y, w, h = cv2.boundingRect(c)
+
+            # Draw the contour or bounding box on the live feed
+            cv2.drawContours(frame, [c], -1, (0, 255, 0), 2)
+            # Alternatively, you could draw a bounding box:
+            # cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
 
             # Extract grayscale ROI for matching
             roi_gray = gray[y:y+h, x:x+w]
@@ -126,28 +133,15 @@ def detect_shapes_and_symbols(frame, symbol_recognizer):
             symbol_name = symbol_recognizer.match_symbol(roi_gray)
 
             if symbol_name:
-                # Retrieve the color template for this symbol
-                template_color, template_gray = symbol_recognizer.symbol_templates[symbol_name]
-                # Resize the template to match the detected bounding box size
-                resized_template_color = cv2.resize(template_color, (w, h))
-
-                # Overlay the resized color template on the live feed
-                frame[y:y+h, x:x+w] = resized_template_color
-
-                # Draw bounding box and label on the live frame
-                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                matched_symbol_name = symbol_name
+                # Label the bounding box in the live feed
                 cv2.putText(frame, symbol_name, (x, y - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-
-                # Process the full reference image to show its outlines
-                reference_display = process_reference_image(template_color)
             else:
-                # For unknown symbols, draw a blue bounding box with label
-                cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 0, 0), 2)
                 cv2.putText(frame, "Unknown Symbol", (x, y - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
-    return frame, reference_display
+    return frame, matched_symbol_name
 
 def main():
     # Initialize symbol recognizer with the directory containing template images
@@ -168,14 +162,16 @@ def main():
             # Flip frame if needed (vertical/horizontal flip as required)
             frame = cv2.flip(frame, -1)
 
-            # Process the frame to detect shapes, symbols, and get the reference display
-            output_frame, reference_display = detect_shapes_and_symbols(frame, symbol_recognizer)
+            # Detect shapes and symbols
+            output_frame, matched_symbol_name = detect_shapes_and_symbols(frame, symbol_recognizer)
 
-            # Show the live feed with outlines and identifiers
+            # Show the live feed with outlines and labels (no template overlay)
             cv2.imshow("Camera Feed", output_frame)
 
             # Show the processed reference image (if a symbol was matched)
-            if reference_display is not None:
+            if matched_symbol_name:
+                template_color, _ = symbol_recognizer.symbol_templates[matched_symbol_name]
+                reference_display = process_reference_image(template_color)
                 cv2.imshow("Reference Feed", reference_display)
             else:
                 # If no match, show a black image or a message
