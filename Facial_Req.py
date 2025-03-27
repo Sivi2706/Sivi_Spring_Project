@@ -16,36 +16,39 @@ class SymbolRecognizer:
         for subfolder in os.listdir(self.symbol_dir):
             subfolder_path = os.path.join(self.symbol_dir, subfolder)
             
+            # Ensure it's a directory
             if os.path.isdir(subfolder_path):
+                # Iterate through PNG files in subfolder
                 for filename in os.listdir(subfolder_path):
                     if filename.lower().endswith('.png'):
                         full_path = os.path.join(subfolder_path, filename)
                         
-                        # Load template in color and convert to HSV
-                        template = cv2.imread(full_path, cv2.IMREAD_COLOR)
+                        # Load template
+                        template = cv2.imread(full_path, cv2.IMREAD_GRAYSCALE)
+                        
                         if template is not None:
-                            template_hsv = cv2.cvtColor(template, cv2.COLOR_BGR2HSV)
+                            # Create symbol name from subfolder and filename
                             symbol_name = f"{subfolder}_{os.path.splitext(filename)[0]}"
-                            self.symbol_templates[symbol_name] = template_hsv
-                            print(f"Loaded HSV template: {symbol_name}")
+                            self.symbol_templates[symbol_name] = template
+                            print(f"Loaded template: {symbol_name}")
         
         if not self.symbol_templates:
             print("No templates found. Exiting.")
             exit()
-        print(f"Loaded {len(self.symbol_templates)} HSV templates.")
+        print(f"Loaded {len(self.symbol_templates)} templates.")
         input("Press Enter to continue...")
 
-    def match_symbol(self, roi_hsv):
+    def match_symbol(self, roi):
         best_match = None
         best_score = float('inf')
         
-        for name, template_hsv in self.symbol_templates.items():
+        for name, template in self.symbol_templates.items():
             try:
-                # Resize template to match ROI dimensions
-                resized_template = cv2.resize(template_hsv, (roi_hsv.shape[1], roi_hsv.shape[0]))
+                # Resize template to match ROI
+                resized_template = cv2.resize(template, (roi.shape[1], roi.shape[0]))
                 
-                # Perform template matching in HSV space
-                result = cv2.matchTemplate(roi_hsv, resized_template, cv2.TM_SQDIFF_NORMED)
+                # Compute template matching
+                result = cv2.matchTemplate(roi, resized_template, cv2.TM_SQDIFF_NORMED)
                 _, score, _, _ = cv2.minMaxLoc(result)
                 
                 if score < best_score:
@@ -54,7 +57,7 @@ class SymbolRecognizer:
             except Exception as e:
                 print(f"Error matching template {name}: {e}")
         
-        return best_match if best_score < 0.25 else None  # Adjusted threshold for HSV
+        return best_match if best_score < 0.2 else None
 
 def initialize_camera():
     try:
@@ -66,64 +69,117 @@ def initialize_camera():
         print(f"Camera initialization failed: {e}")
         return None
 
+def detect_shape_color(contour):
+    """
+    Determine shape based on number of vertices and color characteristics.
+    """
+    # Approximate the contour to reduce vertices
+    perimeter = cv2.arcLength(contour, True)
+    approx = cv2.approxPolyDP(contour, 0.04 * perimeter, True)
+    
+    # Number of vertices
+    vertex_count = len(approx)
+    
+    # Area of the contour
+    area = cv2.contourArea(contour)
+    
+    # Shape determination logic
+    if vertex_count == 3:
+        return "Triangle"
+    elif vertex_count == 4:
+        # Check aspect ratio for more accurate rectangle/square detection
+        x, y, w, h = cv2.boundingRect(contour)
+        aspect_ratio = float(w) / h
+        return "Square" if 0.9 <= aspect_ratio <= 1.1 else "Rectangle"
+    elif vertex_count == 5:
+        # Improved pentagon detection
+        # Check for more specific pentagon characteristics
+        if 0.8 * area < cv2.contourArea(cv2.convexHull(contour)) < 1.2 * area:
+            return "Pentagon"
+    elif vertex_count >= 6:
+        # Circle or approximate circle detection
+        hull = cv2.convexHull(contour)
+        hull_area = cv2.contourArea(hull)
+        
+        # Check if the contour is close to a perfect circle
+        if area / hull_area > 0.85:
+            return "Circle"
+    
+    return "Unknown"
+
 def detect_shapes_and_symbols(frame, symbol_recognizer):
-    # Convert to HSV color space
+    # Convert to grayscale and color
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     
-    # Use Value channel for thresholding
-    value_channel = hsv[:, :, 2]
-    
-    # Adaptive thresholding for better light compensation
-    thresh = cv2.adaptiveThreshold(value_channel, 255, 
-                                  cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                  cv2.THRESH_BINARY_INV, 11, 2)
-    
-    # Find contours
+    # Threshold and find contours
+    _, thresh = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
     cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     for c in cnts:
+        # Filter contours by area
         if cv2.contourArea(c) > 500:
+            # Determine shape
+            shape = detect_shape_color(c)
+            
+            # Bounding rectangle
             x, y, w, h = cv2.boundingRect(c)
             
-            # Extract ROI from HSV image
-            roi_hsv = hsv[y:y+h, x:x+w]
+            # Extract ROI
+            roi = gray[y:y+h, x:x+w]
             
-            # Symbol recognition in HSV space
-            symbol_name = symbol_recognizer.match_symbol(roi_hsv)
+            # Symbol recognition
+            symbol_name = symbol_recognizer.match_symbol(roi)
             
-            # Visualization
+            # Visualize results
             cv2.drawContours(frame, [c], -1, (0, 255, 0), 2)
             cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 0, 0), 2)
             
-            label = symbol_name if symbol_name else "Unknown Symbol"
+            # Display recognized shape and symbol
+            label = f"{shape}: {symbol_name}" if symbol_name else shape
             cv2.putText(frame, label, (x, y - 10), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
     
     return frame
 
 def main():
+    # Initialize symbol recognizer
     symbol_dir = '/home/raspberry/Documents/S1V1/Sivi_Spring_Project/Symbol-images'
     symbol_recognizer = SymbolRecognizer(symbol_dir)
     
+    # Initialize camera
     picam2 = initialize_camera()
     if picam2 is None:
+        print("Exiting program. Camera could not be initialized.")
         return
 
     try:
+        # Main processing loop
         while True:
+            # Capture frame from the camera
             frame = picam2.capture_array()
-            frame = cv2.flip(frame, -1)  # Adjust based on camera orientation
-            
-            # Process frame with HSV-based detection
+
+            # Flip the frame vertically (optional, depending on camera orientation)
+            frame = cv2.flip(frame, -1)
+
+            # Detect shapes and symbols
             output_frame = detect_shapes_and_symbols(frame, symbol_recognizer)
-            
-            cv2.imshow("HSV Symbol Detection", output_frame)
+
+            # Display the frame
+            cv2.imshow("Camera Feed", output_frame)
+
+            # Exit on 'q' key press
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
 
+    except Exception as e:
+        print(f"An error occurred: {e}")
+
     finally:
+        # Cleanup
         cv2.destroyAllWindows()
         picam2.stop()
 
+# Run the main function
 if __name__ == "__main__":
     main()
