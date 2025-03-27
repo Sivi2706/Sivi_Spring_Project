@@ -5,18 +5,25 @@ from picamera2 import Picamera2
 
 class SymbolRecognizer:
     def __init__(self, symbol_dir):
-        self.symbol_dir = symbol_dir
+        self.symbol_dir = symbol_dir  # Only uses the specified Symbol-images folder
         # Dictionary: symbol_name -> (color_template (RGB), gray_template, contour)
         self.symbol_templates = {}
         self.calibrate()
 
     def calibrate(self):
         print("Starting Calibration Stage...")
+        print(f"Loading templates exclusively from: {self.symbol_dir}")
+
+        # Verify the Symbol-images directory exists
+        if not os.path.exists(self.symbol_dir):
+            print(f"Error: Symbol-images directory not found at {self.symbol_dir}")
+            exit()
 
         for subfolder in os.listdir(self.symbol_dir):
             subfolder_path = os.path.join(self.symbol_dir, subfolder)
 
             if os.path.isdir(subfolder_path):
+                print(f"\nProcessing symbol category: {subfolder}")
                 for filename in os.listdir(subfolder_path):
                     if filename.lower().endswith('.png'):
                         full_path = os.path.join(subfolder_path, filename)
@@ -36,13 +43,15 @@ class SymbolRecognizer:
 
                             symbol_name = f"{subfolder}_{os.path.splitext(filename)[0]}"
                             self.symbol_templates[symbol_name] = (template_color, template_gray, contour)
-                            print(f"Loaded template: {symbol_name}")
+                            print(f"  Loaded template: {filename}")
+                        else:
+                            print(f"  Warning: Could not load {filename}")
 
         if not self.symbol_templates:
-            print("No templates found. Exiting.")
+            print("\nNo valid templates found in Symbol-images folder. Exiting.")
             exit()
-        print(f"Loaded {len(self.symbol_templates)} templates.")
-        input("Press Enter to continue...")
+        print(f"\nSuccessfully loaded {len(self.symbol_templates)} templates from Symbol-images.")
+        input("Press Enter to start detection...")
 
     def match_symbol(self, roi_gray):
         best_match = None
