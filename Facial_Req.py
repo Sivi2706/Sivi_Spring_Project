@@ -46,8 +46,7 @@ class SymbolRecognizer:
     def match_symbol(self, roi_gray):
         """
         Attempt to match the given grayscale ROI with one of the stored templates.
-        Returns the best matching symbol name if below a similarity threshold,
-        otherwise None.
+        Returns (best_match, best_score). If no match is good enough, returns (None, inf).
         """
         best_match = None
         best_score = float('inf')
@@ -57,7 +56,7 @@ class SymbolRecognizer:
                 # Resize the grayscale template to match the ROI size
                 resized_template_gray = cv2.resize(template_gray, (roi_gray.shape[1], roi_gray.shape[0]))
 
-                # Compute template matching (SQDIFF is minimized for better matches)
+                # Compute template matching (SQDIFF_NORMED => lower is better)
                 result = cv2.matchTemplate(roi_gray, resized_template_gray, cv2.TM_SQDIFF_NORMED)
                 _, score, _, _ = cv2.minMaxLoc(result)
 
@@ -67,18 +66,21 @@ class SymbolRecognizer:
             except Exception as e:
                 print(f"Error matching template {name}: {e}")
 
-        # Return the best match if it's reasonably close
-        return best_match if best_score < 0.2 else None
+        # Return the best match and its score
+        if best_score < 0.2:
+            return best_match, best_score
+        else:
+            return None, float('inf')
 
 def process_reference_image(template_color):
     """
-    Process the full reference (template) image to draw its outlines.
-    The image is converted to grayscale, thresholded, and its contours are drawn.
+    Convert the reference (template) image to grayscale, threshold it, find contours,
+    and draw them in green on top of the color image to show outlines.
     """
     gray_template = cv2.cvtColor(template_color, cv2.COLOR_BGR2GRAY)
     _, thresh_template = cv2.threshold(gray_template, 127, 255, cv2.THRESH_BINARY)
     contours, _ = cv2.findContours(thresh_template, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
+
     ref_img_with_contours = template_color.copy()
     cv2.drawContours(ref_img_with_contours, contours, -1, (0, 255, 0), 2)
     return ref_img_with_contours
@@ -102,9 +104,10 @@ def initialize_camera():
 
 def detect_shapes_and_symbols(frame, symbol_recognizer):
     """
-    Processes the live frame to detect shapes, match symbols, and return
-    the name of the matched symbol (so we can display the reference image).
-    We do NOT overlay the reference image in the live feed—only bounding boxes.
+    1. Finds contours in the live frame.
+    2. For each contour, tries to match a symbol.
+    3. Labels the contour in the live feed (but does NOT overlay the template).
+    4. Tracks the single best match (lowest score) in this frame, and returns that name.
     """
     # Convert to grayscale for contour detection
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -113,7 +116,9 @@ def detect_shapes_and_symbols(frame, symbol_recognizer):
     _, thresh = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
     cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    matched_symbol_name = None
+    # Keep track of the best match across all contours
+    best_frame_symbol = None
+    best_frame_score = float('inf')
 
     for c in cnts:
         # Filter out small contours
@@ -121,27 +126,30 @@ def detect_shapes_and_symbols(frame, symbol_recognizer):
             # Get bounding rectangle for the contour
             x, y, w, h = cv2.boundingRect(c)
 
-            # Draw the contour or bounding box on the live feed
+            # Draw the contour (green outline) on the live feed
             cv2.drawContours(frame, [c], -1, (0, 255, 0), 2)
-            # Alternatively, you could draw a bounding box:
-            # cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
 
             # Extract grayscale ROI for matching
             roi_gray = gray[y:y+h, x:x+w]
 
             # Attempt to match symbol using the grayscale ROI
-            symbol_name = symbol_recognizer.match_symbol(roi_gray)
+            symbol_name, score = symbol_recognizer.match_symbol(roi_gray)
 
             if symbol_name:
-                matched_symbol_name = symbol_name
                 # Label the bounding box in the live feed
                 cv2.putText(frame, symbol_name, (x, y - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+
+                # Check if this match is the best one in this frame
+                if score < best_frame_score:
+                    best_frame_score = score
+                    best_frame_symbol = symbol_name
             else:
+                # If no good match
                 cv2.putText(frame, "Unknown Symbol", (x, y - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
-    return frame, matched_symbol_name
+    return frame, best_frame_symbol
 
 def main():
     # Initialize symbol recognizer with the directory containing template images
@@ -163,14 +171,14 @@ def main():
             frame = cv2.flip(frame, -1)
 
             # Detect shapes and symbols
-            output_frame, matched_symbol_name = detect_shapes_and_symbols(frame, symbol_recognizer)
+            output_frame, best_symbol_name = detect_shapes_and_symbols(frame, symbol_recognizer)
 
             # Show the live feed with outlines and labels (no template overlay)
             cv2.imshow("Camera Feed", output_frame)
 
-            # Show the processed reference image (if a symbol was matched)
-            if matched_symbol_name:
-                template_color, _ = symbol_recognizer.symbol_templates[matched_symbol_name]
+            # Show the processed reference image for the single best match
+            if best_symbol_name:
+                template_color, _ = symbol_recognizer.symbol_templates[best_symbol_name]
                 reference_display = process_reference_image(template_color)
                 cv2.imshow("Reference Feed", reference_display)
             else:
