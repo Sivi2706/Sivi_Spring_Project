@@ -1,18 +1,45 @@
 import RPi.GPIO as GPIO
 import time
 import numpy as np
+import cv2
+from picamera2 import Picamera2
 
 # Define GPIO pins
 IN1, IN2 = 22, 27         # Left motor control
 IN3, IN4 = 17, 4          # Right motor control
-ENA, ENB = 13, 12         # PWM pins for motors
-encoderPinRight = 23      # Right encoder
-encoderPinLeft =  24      # Left encoder
-ServoMotor = 18           # Servo motor PWM for the camera
-# Constants (to be calibrated)
-WHEEL_DIAMETER = 4.05  # cm
+ENA, ENB = 13, 12         # PWM pins for motors ENA=Right ENB=Left
+encoderPinRight = 23       # Right encoder
+encoderPinLeft = 24        # Left encoder
+ServoMotor = 18            # Servo motor PWM for the camera
+
+# Constants
+WHEEL_DIAMETER = 4.05      # cm
 PULSES_PER_REVOLUTION = 20
 WHEEL_CIRCUMFERENCE = np.pi * WHEEL_DIAMETER  # cm
+
+# Servo motor parameters
+SERVO_MIN_DUTY = 2.5       # Duty cycle for 0 degrees
+SERVO_MAX_DUTY = 12.5      # Duty cycle for 180 degrees
+SERVO_FREQ = 50            # 50Hz frequency for servo
+
+# Line following parameters
+BASE_SPEED = 50            # Base motor speed (0-100)
+TURN_SPEED = 65            # Speed for pivot turns (0-100)
+MIN_CONTOUR_AREA = 1000    # Minimum area for valid contours
+FRAME_WIDTH = 640          # Camera frame width
+FRAME_HEIGHT = 480         # Camera frame height
+
+# Threshold for turning
+TURN_THRESHOLD = 40        # Adjust this value based on your needs
+
+# Recovery parameters
+REVERSE_DURATION = 0.5    # seconds to reverse straight
+REVERSE_DIR_DURATION = 1.0 # seconds to reverse with direction
+REVERSE_SPEED = 35         # speed when reversing straight
+REVERSE_SPEED_HIGH = 90   # higher speed for directional reverse
+REVERSE_SPEED_LOW = 30     # lower speed for directional reverse
+SCAN_ANGLES = [45, 135, 90]  # left, right, center
+SCAN_TIME_PER_ANGLE = 0.5  # seconds per angle
 
 # Variables to store encoder counts
 right_counter = 0
@@ -48,45 +75,64 @@ def setup_gpio():
     GPIO.add_event_detect(encoderPinRight, GPIO.RISING, callback=right_encoder_callback)
     GPIO.add_event_detect(encoderPinLeft, GPIO.RISING, callback=left_encoder_callback)
     
-    # Set up PWM
+    # Set up PWM for motors
     right_pwm = GPIO.PWM(ENA, 1000)  # 1000 Hz frequency
     left_pwm = GPIO.PWM(ENB, 1000)
     
     right_pwm.start(0)
     left_pwm.start(0)
     
-    return right_pwm, left_pwm
+    # Set up PWM for servo
+    GPIO.setup(ServoMotor, GPIO.OUT)
+    servo_pwm = GPIO.PWM(ServoMotor, SERVO_FREQ)
+    servo_pwm.start(0)
+    
+    return right_pwm, left_pwm, servo_pwm
 
-# Movement functions
-def move_forward(right_pwm, left_pwm, speed):
-    GPIO.output(IN1, GPIO.LOW)
-    GPIO.output(IN2, GPIO.HIGH)
+# Function to set servo angle
+def set_servo_angle(servo_pwm, angle):
+    if angle < 0:
+        angle = 0
+    elif angle > 180:
+        angle = 180
+    
+    duty = SERVO_MIN_DUTY + (angle * (SERVO_MAX_DUTY - SERVO_MIN_DUTY) / 180.0)
+    servo_pwm.ChangeDutyCycle(duty)
+    time.sleep(0.3)  # Give servo time to move
+    servo_pwm.ChangeDutyCycle(0)  # Stop sending signal to prevent jitter
+
+# Motor control functions
+def pivot_turn_right(right_pwm, left_pwm):
+    # Right wheel backward, left wheel forward
+    GPIO.output(IN1, GPIO.HIGH)   # Left forward 
+    GPIO.output(IN2, GPIO.LOW)
+    GPIO.output(IN3, GPIO.LOW)    # Right backward
+    GPIO.output(IN4, GPIO.LOW)    
+    right_pwm.ChangeDutyCycle(TURN_SPEED)
+    left_pwm.ChangeDutyCycle(TURN_SPEED)
+
+def pivot_turn_left(right_pwm, left_pwm):
+    # Right wheel forward, left wheel backward
+    GPIO.output(IN1, GPIO.LOW)    # Left backward
+    GPIO.output(IN2, GPIO.LOW)    # Left backward
+    GPIO.output(IN3, GPIO.LOW)    # Right forward
+    GPIO.output(IN4, GPIO.HIGH)
+    right_pwm.ChangeDutyCycle(TURN_SPEED)
+    left_pwm.ChangeDutyCycle(TURN_SPEED)
+
+def move_forward(right_pwm, left_pwm):
+    GPIO.output(IN1, GPIO.HIGH)
+    GPIO.output(IN2, GPIO.LOW)
     GPIO.output(IN3, GPIO.LOW)
     GPIO.output(IN4, GPIO.HIGH)
-    right_pwm.ChangeDutyCycle(speed)
-    left_pwm.ChangeDutyCycle(speed)
+    right_pwm.ChangeDutyCycle(BASE_SPEED)
+    left_pwm.ChangeDutyCycle(BASE_SPEED)
 
 def move_backward(right_pwm, left_pwm, speed):
-    GPIO.output(IN1, GPIO.HIGH)
-    GPIO.output(IN2, GPIO.LOW)
-    GPIO.output(IN3, GPIO.HIGH)
-    GPIO.output(IN4, GPIO.LOW)
-    right_pwm.ChangeDutyCycle(speed)
-    left_pwm.ChangeDutyCycle(speed)
-
-def turn_right(right_pwm, left_pwm, speed):
-    GPIO.output(IN1, GPIO.HIGH)
-    GPIO.output(IN2, GPIO.LOW)
-    GPIO.output(IN3, GPIO.HIGH)
-    GPIO.output(IN4, GPIO.LOW)
-    right_pwm.ChangeDutyCycle(speed)
-    left_pwm.ChangeDutyCycle(speed)
-
-def turn_left(right_pwm, left_pwm, speed):
     GPIO.output(IN1, GPIO.LOW)
     GPIO.output(IN2, GPIO.HIGH)
-    GPIO.output(IN3, GPIO.LOW)
-    GPIO.output(IN4, GPIO.HIGH)
+    GPIO.output(IN3, GPIO.HIGH)
+    GPIO.output(IN4, GPIO.LOW)
     right_pwm.ChangeDutyCycle(speed)
     left_pwm.ChangeDutyCycle(speed)
 
@@ -98,117 +144,201 @@ def stop_motors(right_pwm, left_pwm):
     GPIO.output(IN3, GPIO.LOW)
     GPIO.output(IN4, GPIO.LOW)
 
-# Function to calculate distance
-def calculate_distance(encoder_count):
-    revolutions = encoder_count / PULSES_PER_REVOLUTION
-    distance = revolutions * WHEEL_CIRCUMFERENCE
-    return distance
+# Initialize camera
+def setup_camera():
+    picam2 = Picamera2()
+    picam2.configure(picam2.create_preview_configuration(main={"size": (FRAME_WIDTH, FRAME_HEIGHT)}))
+    picam2.start()
+    return picam2
 
-# Print movement stats
-def print_movement_stats():
-    global right_counter, left_counter
+# Line detection function (using full frame)
+def detect_line(frame):
+    # Convert frame to HSV color space
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     
-    # Calculate distances
-    right_distance = calculate_distance(right_counter)
-    left_distance = calculate_distance(left_counter)
-    distance_difference = abs(right_distance - left_distance)
+    # Define specific range for black color detection
+    lower_black = np.array([0, 0, 0])
+    upper_black = np.array([180, 255, 120])  # Increased upper V value to include gray
     
-    print(f"Right Encoder Pulses: {right_counter}")
-    print(f"Left Encoder Pulses: {left_counter}")
-    print(f"Right Encoder Distance: {right_distance:.2f} cm")
-    print(f"Left Encoder Distance: {left_distance:.2f} cm")
-    print(f"Difference: {distance_difference:.2f} cm")
+    # Create mask for black regions (using full frame)
+    mask_black = cv2.inRange(hsv, lower_black, upper_black)
+    
+    # Apply morphological operations to clean up the mask
+    kernel = np.ones((5, 5), np.uint8)
+    mask_black = cv2.erode(mask_black, kernel, iterations=1)
+    mask_black = cv2.dilate(mask_black, kernel, iterations=1)
+    
+    # Find contours
+    contours, _ = cv2.findContours(mask_black, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    # Draw center reference line
+    center_x = FRAME_WIDTH // 2
+    cv2.line(frame, (center_x, 0), (center_x, FRAME_HEIGHT), (0, 0, 255), 2)
+    
+    # Process contours
+    if contours:
+        # Find the largest contour
+        largest_contour = max(contours, key=cv2.contourArea)
+        area = cv2.contourArea(largest_contour)
+        
+        if area > MIN_CONTOUR_AREA:
+            # Calculate the moments of the contour
+            M = cv2.moments(largest_contour)
+            
+            # Draw the contour
+            cv2.drawContours(frame, [largest_contour], -1, (0, 255, 0), 2)
+            
+            # If moment is valid, calculate centroid
+            if M["m00"] != 0:
+                cx = int(M["m10"] / M["m00"])
+                cy = int(M["m01"] / M["m00"])
+                
+                # Draw the centroid
+                cv2.circle(frame, (cx, cy), 5, (255, 0, 0), -1)
+                
+                # Calculate the error (distance from center)
+                error = cx - center_x
+                
+                # Draw line from center to centroid
+                cv2.line(frame, (center_x, cy), (cx, cy), (255, 0, 0), 2)
+                
+                # Display error value
+                cv2.putText(frame, f"Error: {error}", (10, 30), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+                
+                return error, True
+    
+    # Return zero error if no valid line detected
+    return 0, False
 
-# Main loop for manual control
-def manual_control():
-    global right_counter, left_counter
-    right_pwm, left_pwm = setup_gpio()
+# Main function
+def main():
+    # Initialize GPIO and PWM
+    right_pwm, left_pwm, servo_pwm = setup_gpio()
     
-    print("\n==== Robot Movement Testing Program ====")
-    print("Commands:")
-    print("  f <speed> - Move forward")
-    print("  b <speed> - Move backward")
-    print("  r <speed> - Turn right")
-    print("  l <speed> - Turn left")
-    print("  s - Stop motors")
-    print("  t <time> - Set movement time (seconds)")
-    print("  q - Quit")
+    # Initialize camera
+    picam2 = setup_camera()
     
-    movement_time = 1.0  # Default movement time in seconds
+    # Set servo to center initially
+    set_servo_angle(servo_pwm, 90)
+    
+    # State variables
+    state = "NORMAL"
+    reverse_start_time = 0
+    current_scan_angle = 0
+    scan_start_time = 0
+    
+    print("Line follower started. Press Ctrl+C to stop.")
     
     try:
         while True:
-            command = input("\nEnter command (f/b/r/l/s/t/q): ").strip().lower()
+            # Capture frame
+            frame = picam2.capture_array()
             
-            if command == 'q':
+            # Detect line and check if found
+            error, line_found = detect_line(frame)
+            
+            # Display the frame
+            cv2.imshow("Line Follower", frame)
+            
+            # Exit on 'q' key press
+            if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
-                
-            if command == 's':
-                stop_motors(right_pwm, left_pwm)
-                print("Motors stopped.")
-                continue
-                
-            if command.startswith('t '):
-                try:
-                    movement_time = float(command.split()[1])
-                    print(f"Movement time set to {movement_time:.1f} seconds")
-                except (ValueError, IndexError):
-                    print("Invalid time value. Please use format 't <seconds>'")
-                continue
-                
-            # For movement commands
-            try:
-                cmd_parts = command.split()
-                if len(cmd_parts) != 2:
-                    print("Please use format '<command> <speed>'")
-                    continue
-                    
-                cmd, speed = cmd_parts
-                speed = float(speed)
-                
-                if not (0 <= speed <= 100):
-                    print("Speed must be between 0 and 100")
-                    continue
-                
-                # Reset encoder counts
-                right_counter = 0
-                left_counter = 0
-                
-                # Execute movement based on command
-                if cmd == 'f':
-                    print(f"Moving forward at {speed}% for {movement_time:.1f} seconds")
-                    move_forward(right_pwm, left_pwm, speed)
-                elif cmd == 'b':
-                    print(f"Moving backward at {speed}% for {movement_time:.1f} seconds")
-                    move_backward(right_pwm, left_pwm, speed)
-                elif cmd == 'r':
-                    print(f"Turning right at {speed}% for {movement_time:.1f} seconds")
-                    turn_right(right_pwm, left_pwm, speed)
-                elif cmd == 'l':
-                    print(f"Turning left at {speed}% for {movement_time:.1f} seconds")
-                    turn_left(right_pwm, left_pwm, speed)
+            
+            # State machine
+            if state == "NORMAL":
+                if line_found:
+                    # Normal line following
+                    if error > TURN_THRESHOLD:
+                        pivot_turn_right(right_pwm, left_pwm)
+                        print("Pivot Turning Right")
+                    elif error < -TURN_THRESHOLD:
+                        pivot_turn_left(right_pwm, left_pwm)
+                        print("Pivot Turning Left")
+                    else:
+                        move_forward(right_pwm, left_pwm)
+                        print("Moving Forward")
                 else:
-                    print(f"Unknown command: {cmd}")
-                    continue
-                
-                # Run for specified time
-                time.sleep(movement_time)
-                stop_motors(right_pwm, left_pwm)
-                print("Motors stopped.")
-                
-                # Print movement statistics
-                print_movement_stats()
-                
-            except (ValueError, IndexError):
-                print("Invalid command format. Use '<command> <speed>'")
+                    # Line lost, start reversing
+                    print("Line lost. Reversing...")
+                    state = "REVERSING"
+                    reverse_start_time = time.time()
+                    move_backward(right_pwm, left_pwm, REVERSE_SPEED)
+            
+            elif state == "REVERSING":
+                if time.time() - reverse_start_time >= REVERSE_DURATION:
+                    # Stop reversing and start scanning
+                    stop_motors(right_pwm, left_pwm)
+                    print("Scanning for line...")
+                    state = "SCANNING"
+                    current_scan_angle = 0
+                    set_servo_angle(servo_pwm, SCAN_ANGLES[current_scan_angle])
+                    scan_start_time = time.time()
+            
+            elif state == "SCANNING":
+                if time.time() - scan_start_time >= SCAN_TIME_PER_ANGLE:
+                    # Check for line at current angle
+                    frame = picam2.capture_array()
+                    error, line_found = detect_line(frame)
+                    
+                    if line_found:
+                        # Determine direction based on scan angle
+                        if current_scan_angle == 0:
+                            reverse_dir = 'left'
+                        elif current_scan_angle == 1:
+                            reverse_dir = 'right'
+                        else:
+                            reverse_dir = 'center'
+                        
+                        print(f"Line found at {reverse_dir}, reversing...")
+                        state = "REVERSING_DIRECTION"
+                        reverse_start_time = time.time()
+                        set_servo_angle(servo_pwm, 90)
+                        
+                        # Set motor controls for directional reverse
+                        GPIO.output(IN1, GPIO.LOW)  # Left motor backward
+                        GPIO.output(IN2, GPIO.HIGH)
+                        GPIO.output(IN3, GPIO.HIGH)  # Right motor backward
+                        GPIO.output(IN4, GPIO.LOW)
+                        
+                        if reverse_dir == 'left':
+                            right_pwm.ChangeDutyCycle(REVERSE_SPEED_HIGH)
+                            left_pwm.ChangeDutyCycle(REVERSE_SPEED_LOW)
+                        elif reverse_dir == 'right':
+                            right_pwm.ChangeDutyCycle(REVERSE_SPEED_LOW)
+                            left_pwm.ChangeDutyCycle(REVERSE_SPEED_HIGH)
+                        else:  # center
+                            right_pwm.ChangeDutyCycle(REVERSE_SPEED)
+                            left_pwm.ChangeDutyCycle(REVERSE_SPEED)
+                    
+                    else:
+                        # Move to next scan angle
+                        current_scan_angle += 1
+                        if current_scan_angle < len(SCAN_ANGLES):
+                            set_servo_angle(servo_pwm, SCAN_ANGLES[current_scan_angle])
+                            scan_start_time = time.time()
+                        else:
+                            # All angles scanned, no line found: reverse again
+                            print("No line found. Reversing again...")
+                            state = "REVERSING"
+                            move_backward(right_pwm, left_pwm, REVERSE_SPEED)
+                            reverse_start_time = time.time()
+            
+            elif state == "REVERSING_DIRECTION":
+                if time.time() - reverse_start_time >= REVERSE_DIR_DURATION:
+                    stop_motors(right_pwm, left_pwm)
+                    state = "NORMAL"
+                    print("Directional reverse complete. Resuming normal.")
     
     except KeyboardInterrupt:
-        print("\nManual control stopped by user.")
+        print("\nProgram stopped by user")
     finally:
+        # Cleanup
         stop_motors(right_pwm, left_pwm)
+        set_servo_angle(servo_pwm, 90)
+        cv2.destroyAllWindows()
         GPIO.cleanup()
-        print("GPIO cleaned up.")
+        print("Resources released")
 
-# Run the manual control function
 if __name__ == "__main__":
-    manual_control()
+    main()

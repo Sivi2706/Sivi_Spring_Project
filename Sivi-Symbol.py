@@ -1,158 +1,143 @@
 import numpy as np
 import cv2
 import os
-import pickle
+from picamera2 import Picamera2
 
-class ColorEdgeDetector:
-    def __init__(self):
-        self.reference_data = []
-        self.min_contour_area = 500
-        self.match_threshold = 0.85  # Shape matching threshold
+class SymbolRecognizer:
+    def __init__(self, symbol_dir):
+        self.symbol_dir = symbol_dir
+        self.symbol_templates = {}
+        self.calibrate()
 
-    def detect_color_edges(self, frame):
-        """Highlight edges of color contrasts in the image with bright outlines"""
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    def calibrate(self):
+        print("Starting Calibration Stage...")
         
-        color_ranges = [
-            ((0, 0, 200), (180, 30, 255), "White", (255, 255, 255)),
-            ((90, 50, 50), (130, 255, 255), "Blue", (255, 0, 0)),
-            ((0, 100, 100), (10, 255, 255), "Red", (0, 0, 255)),
-            ((160, 100, 100), (180, 255, 255), "Red", (0, 0, 255)),
-            ((40, 50, 50), (80, 255, 255), "Green", (0, 255, 0))
-        ]
-        
-        edge_display = np.zeros_like(frame)
-        detected_shapes = []
-        
-        for lower, upper, color_name, color_bgr in color_ranges:
-            mask = cv2.inRange(hsv, np.array(lower), np.array(upper))
-            kernel = np.ones((3,3), np.uint8)
-            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=2)
-            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+        # Iterate through subfolders
+        for subfolder in os.listdir(self.symbol_dir):
+            subfolder_path = os.path.join(self.symbol_dir, subfolder)
             
-            edges = cv2.Canny(mask, 30, 100)
-            edges = cv2.dilate(edges, kernel, iterations=1)
-            
-            # Find and store contours
-            contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            for cnt in contours:
-                if cv2.contourArea(cnt) > self.min_contour_area:
-                    # Store contour information
-                    epsilon = 0.02 * cv2.arcLength(cnt, True)
-                    approx = cv2.approxPolyDP(cnt, epsilon, True)
-                    detected_shapes.append((color_name, approx, color_bgr))
-            
-            # Draw edges
-            colored_edges = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
-            colored_edges[np.where((colored_edges == [255, 255, 255]).all(axis=2))] = color_bgr
-            edge_display = cv2.add(edge_display, colored_edges)
+            # Ensure it's a directory
+            if os.path.isdir(subfolder_path):
+                # Iterate through PNG files in subfolder
+                for filename in os.listdir(subfolder_path):
+                    if filename.lower().endswith('.png'):
+                        full_path = os.path.join(subfolder_path, filename)
+                        
+                        # Load template
+                        template = cv2.imread(full_path, cv2.IMREAD_GRAYSCALE)
+                        
+                        if template is not None:
+                            # Create symbol name from subfolder and filename
+                            symbol_name = f"{subfolder}_{os.path.splitext(filename)[0]}"
+                            self.symbol_templates[symbol_name] = template
+                            print(f"Loaded template: {symbol_name}")
         
-        output = cv2.addWeighted(frame, 0.5, edge_display, 0.8, 0)
-        return output, detected_shapes
+        if not self.symbol_templates:
+            print("No templates found. Exiting.")
+            exit()
+        print(f"Loaded {len(self.symbol_templates)} templates.")
+        input("Press Enter to continue...")
 
-    def save_reference(self, image_path):
-        """Process reference image and store its parameters"""
-        frame = cv2.imread(image_path)
-        if frame is not None:
-            _, shapes = self.detect_color_edges(frame)
-            if shapes:
-                # Get the image name without extension
-                name = os.path.splitext(os.path.basename(image_path))[0]
-                # Store the first significant shape found
-                color_name, approx, color_bgr = shapes[0]
-                self.reference_data.append({
-                    'name': name,
-                    'color': color_name,
-                    'contour': approx,
-                    'color_bgr': color_bgr
-                })
-                print(f"Saved reference for {name}")
-                return True
-        return False
+    def match_symbol(self, roi):
+        best_match = None
+        best_score = float('inf')
+        
+        for name, template in self.symbol_templates.items():
+            try:
+                # Resize template to match ROI
+                resized_template = cv2.resize(template, (roi.shape[1], roi.shape[0]))
+                
+                # Compute template matching
+                result = cv2.matchTemplate(roi, resized_template, cv2.TM_SQDIFF_NORMED)
+                _, score, _, _ = cv2.minMaxLoc(result)
+                
+                if score < best_score:
+                    best_score = score
+                    best_match = name
+            except Exception as e:
+                print(f"Error matching template {name}: {e}")
+        
+        return best_match if best_score < 0.2 else None
 
-    def match_shapes(self, contour):
-        """Match detected contour against reference shapes"""
-        for ref in self.reference_data:
-            match = cv2.matchShapes(ref['contour'], contour, cv2.CONTOURS_MATCH_I2, 0)
-            if match < self.match_threshold:
-                return ref['name']
+def initialize_camera():
+    try:
+        picam2 = Picamera2()
+        picam2.configure(picam2.create_preview_configuration(main={"size": (640, 480)}))
+        picam2.start()
+        return picam2
+    except RuntimeError as e:
+        print(f"Camera initialization failed: {e}")
         return None
 
-    def process_live_feed(self):
-        """Process live video feed and detect known patterns"""
-        cap = cv2.VideoCapture(0)
-        
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
+def detect_shapes_and_symbols(frame, symbol_recognizer):
+    # Convert to grayscale
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    
+    # Threshold and find contours
+    _, thresh = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
+    cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    for c in cnts:
+        # Filter contours by area
+        if cv2.contourArea(c) > 500:
+            # Bounding rectangle
+            x, y, w, h = cv2.boundingRect(c)
             
-            output, detected_shapes = self.detect_color_edges(frame)
+            # Extract ROI
+            roi = gray[y:y+h, x:x+w]
             
-            # Check for matches with reference shapes
-            for color_name, approx, color_bgr in detected_shapes:
-                matched_name = self.match_shapes(approx)
-                if matched_name:
-                    # Draw bounding box and label
-                    x, y, w, h = cv2.boundingRect(approx)
-                    cv2.rectangle(output, (x, y), (x+w, y+h), color_bgr, 2)
-                    cv2.putText(output, matched_name, (x, y-10), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.9, color_bgr, 2)
+            # Shape and symbol recognition
+            symbol_name = symbol_recognizer.match_symbol(roi)
             
-            cv2.imshow('Live Detection', output)
+            # Visualize results
+            cv2.drawContours(frame, [c], -1, (0, 255, 0), 2)
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 0, 0), 2)
             
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
-        
-        cap.release()
-        cv2.destroyAllWindows()
-
-    def save_references_to_file(self, filename='reference_data.pkl'):
-        """Save reference data to file"""
-        with open(filename, 'wb') as f:
-            pickle.dump(self.reference_data, f)
-        print(f"Saved references to {filename}")
-
-    def load_references_from_file(self, filename='reference_data.pkl'):
-        """Load reference data from file"""
-        if os.path.exists(filename):
-            with open(filename, 'rb') as f:
-                self.reference_data = pickle.load(f)
-            print(f"Loaded {len(self.reference_data)} references from {filename}")
-            return True
-        return False
+            # Display recognized symbol
+            label = symbol_name if symbol_name else "Unknown Symbol"
+            cv2.putText(frame, label, (x, y - 10), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+    
+    return frame
 
 def main():
-    detector = ColorEdgeDetector()
+    # Initialize symbol recognizer
+    symbol_dir = '/home/raspberry/Documents/S1V1/Sivi_Spring_Project/Symbol-images'
+    symbol_recognizer = SymbolRecognizer(symbol_dir)
     
-    # First mode: Process reference images
-    image_folder = "Symbol-images"
-    if os.path.exists(image_folder):
-        image_files = [f for f in os.listdir(image_folder) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-        
-        if image_files:
-            print("Processing reference images...")
-            for image_name in image_files:
-                image_path = os.path.join(image_folder, image_name)
-                detector.save_reference(image_path)
-            
-            # Save references to file
-            detector.save_references_to_file()
-        else:
-            print(f"No images found in {image_folder}")
-    else:
-        print(f"Folder {image_folder} not found!")
-    
-    # Try to load references if we didn't just save them
-    if not detector.reference_data:
-        detector.load_references_from_file()
-    
-    # Second mode: Live detection
-    if detector.reference_data:
-        print("Starting live detection... Press 'q' to quit")
-        detector.process_live_feed()
-    else:
-        print("No reference data available for detection")
+    # Initialize camera
+    picam2 = initialize_camera()
+    if picam2 is None:
+        print("Exiting program. Camera could not be initialized.")
+        return
 
+    try:
+        # Main processing loop
+        while True:
+            # Capture frame from the camera
+            frame = picam2.capture_array()
+
+            # Flip the frame vertically (optional, depending on camera orientation)
+            frame = cv2.flip(frame, -1)
+
+            # Detect shapes and symbols
+            output_frame = detect_shapes_and_symbols(frame, symbol_recognizer)
+
+            # Display the frame
+            cv2.imshow("Camera Feed", output_frame)
+
+            # Exit on 'q' key press
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
+
+    except Exception as e:
+        print(f"An error occurred: {e}")
+
+    finally:
+        # Cleanup
+        cv2.destroyAllWindows()
+        picam2.stop()
+
+# Run the main function
 if __name__ == "__main__":
     main()
