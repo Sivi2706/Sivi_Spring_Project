@@ -175,7 +175,7 @@ def setup_camera():
     picam2.start()
     return picam2
 
-# Line detection function with colored lines
+# Line detection function with colored lines and color data reading
 def detect_line(frame, target_color="red"):
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     
@@ -207,6 +207,30 @@ def detect_line(frame, target_color="red"):
     kernel = np.ones((5, 5), np.uint8)
     mask = cv2.erode(mask, kernel, iterations=1)
     mask = cv2.dilate(mask, kernel, iterations=1)
+    
+    # Read color data from the mask
+    white_pixels = np.sum(mask == 255)  # Count white pixels in the mask
+    total_pixels = FRAME_WIDTH * FRAME_HEIGHT
+    white_pixel_percentage = (white_pixels / total_pixels) * 100 if total_pixels > 0 else 0
+    
+    # Sample HSV values from the original HSV frame where the mask is white
+    hsv_values = []
+    if white_pixels > 0:
+        white_pixel_coords = np.where(mask == 255)
+        sample_indices = np.random.choice(len(white_pixel_coords[0]), size=min(10, len(white_pixel_coords[0])), replace=False)
+        for idx in sample_indices:
+            y, x = white_pixel_coords[0][idx], white_pixel_coords[1][idx]
+            hsv_pixel = hsv[y, x]
+            hsv_values.append(hsv_pixel.tolist())  # [H, S, V]
+    
+    # Print color data
+    print(f"Color Data for {target_color.capitalize()} Line:")
+    print(f"  White Pixels: {white_pixels} ({white_pixel_percentage:.2f}% of frame)")
+    if hsv_values:
+        avg_hsv = np.mean(hsv_values, axis=0)
+        print(f"  Average HSV of detected pixels: H={avg_hsv[0]:.1f}, S={avg_hsv[1]:.1f}, V={avg_hsv[2]:.1f}")
+    else:
+        print("  No HSV samples collected (no white pixels in mask)")
     
     # Find contours
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
