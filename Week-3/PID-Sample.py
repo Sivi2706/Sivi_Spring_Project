@@ -3,7 +3,6 @@ import cv2
 import numpy as np
 import RPi.GPIO as GPIO
 import os
-import uuid
 
 # Initialize camera
 picam2 = Picamera2()
@@ -32,8 +31,8 @@ pwm1.start(0)
 pwm2.start(0)
 
 # Speed settings
-base_speed = 55  # Base speed for forward movement
-max_speed = 100  # Maximum speed for turns
+base_speed = 55   # Base speed for forward movement
+max_speed = 100   # Maximum speed for turns
 reverse_speed = 50  # Speed for reverse movement
 
 # PID parameters
@@ -45,14 +44,17 @@ Kd = 0.5  # Derivative gain
 integral = 0
 previous_error = 0
 
-# Color ranges in HSV for detection (tuned for white background)
+# Color ranges in HSV (for better color detection)
 color_ranges = {
-    'black': ([0, 0, 0], [180, 255, 50]),
-    'red': ([0, 100, 100], [10, 255, 255]),  # Also check [170, 100, 100], [180, 255, 255] for red's second range
-    'green': ([35, 100, 100], [85, 255, 255]),
-    'yellow': ([20, 100, 100], [30, 255, 255]),
-    'blue': ([100, 100, 100], [130, 255, 255])
+    'black': {'lower': np.array([0, 0, 0]), 'upper': np.array([180, 255, 50])},
+    'red': {'lower': np.array([0, 120, 70]), 'upper': np.array([10, 255, 255])},
+    'red2': {'lower': np.array([170, 120, 70]), 'upper': np.array([180, 255, 255])},  # Red wraps around 180
+    'green': {'lower': np.array([40, 40, 40]), 'upper': np.array([80, 255, 255])},
+    'yellow': {'lower': np.array([20, 100, 100]), 'upper': np.array([30, 255, 255])},
+    'blue': {'lower': np.array([90, 60, 60]), 'upper': np.array([120, 255, 255])}
 }
+
+current_color = None
 
 def set_speed(left_speed, right_speed):
     left_speed = max(0, min(100, left_speed))
@@ -65,7 +67,6 @@ def move_forward():
     GPIO.output(motor_in2, GPIO.LOW)
     GPIO.output(motor_in3, GPIO.HIGH)
     GPIO.output(motor_in4, GPIO.LOW)
-    print("Moving Forward")
     return "Moving Forward"
 
 def move_reverse():
@@ -74,7 +75,6 @@ def move_reverse():
     GPIO.output(motor_in3, GPIO.LOW)
     GPIO.output(motor_in4, GPIO.HIGH)
     set_speed(reverse_speed, reverse_speed)
-    print("Moving Reverse")
     return "Moving Reverse"
 
 def stop():
@@ -83,8 +83,7 @@ def stop():
     GPIO.output(motor_in2, GPIO.LOW)
     GPIO.output(motor_in3, GPIO.LOW)
     GPIO.output(motor_in4, GPIO.LOW)
-    print("Stopping")
-    return "Stopped"
+    return "Stopping"
 
 def pid_control(error):
     global integral, previous_error
@@ -95,107 +94,122 @@ def pid_control(error):
     previous_error = error
     return control_signal
 
-def detect_color(frame):
-    # Convert to HSV for better color detection
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    max_area = 0
-    detected_color = None
-    largest_contour = None
-    combined_mask = np.zeros(frame.shape[:2], dtype=np.uint8)
-
-    for color, (lower, upper) in color_ranges.items():
-        lower = np.array(lower, dtype=np.uint8)
-        upper = np.array(upper, dtype=np.uint8)
-        mask = cv2.inRange(hsv, lower, upper)
-
-        # Handle red's second range
-        if color == 'red':
-            lower_red2 = np.array([170, 100, 100], dtype=np.uint8)
-            upper_red2 = np.array([180, 255, 255], dtype=np.uint8)
-            mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
-            mask = cv2.bitwise_or(mask, mask2)
-
-        # Apply morphological operations to reduce noise
-        kernel = np.ones((5, 5), np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-
-        # Find contours
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        combined_mask = cv2.bitwise_or(combined_mask, mask)
-
-        if contours:
-            # Get the largest contour for this color
-            contour = max(contours, key=cv2.contourArea)
-            area = cv2.contourArea(contour)
-            if area > max_area:
-                max_area = area
-                detected_color = color
-                largest_contour = contour
-
-    return detected_color, largest_contour, combined_mask
+def detect_color_dominant(hsv_img):
+    # Find the dominant color in the image
+    color_pixels = {}
+    
+    for color_name, color_range in color_ranges.items():
+        if color_name == 'red':
+            # Combine both red ranges
+            mask1 = cv2.inRange(hsv_img, color_ranges['red']['lower'], color_ranges['red']['upper'])
+            mask2 = cv2.inRange(hsv_img, color_ranges['red2']['lower'], color_ranges['red2']['upper'])
+            mask = cv2.bitwise_or(mask1, mask2)
+        else:
+            mask = cv2.inRange(hsv_img, color_range['lower'], color_range['upper'])
+        
+        color_pixels[color_name] = cv2.countNonZero(mask)
+    
+    # Remove red2 from consideration (it's part of red)
+    if 'red2' in color_pixels:
+        del color_pixels['red2']
+    
+    # Get the color with most pixels detected
+    dominant_color = max(color_pixels, key=color_pixels.get)
+    
+    # Only return if we have significant detection (at least 100 pixels)
+    if color_pixels[dominant_color] > 100:
+        return dominant_color
+    return None
 
 print("Press 'q' to exit the live feed.")
-
-# Initialize error before the loop
-error = 0
 
 try:
     while True:
         # Capture frame
         frame = picam2.capture_array()
-
-        # Detect color and contour
-        detected_color, largest_contour, mask = detect_color(frame)
-
-        movement = "No line detected"
-        outline_coords = "N/A"
-        display_color = detected_color if detected_color else "None"
-
-        if largest_contour is not None:
-            # Get bounding box
-            x, y, w, h = cv2.boundingRect(largest_contour)
-            outline_coords = f"({x}, {y}, {w}, {h})"
-
-            # Draw outline on the original frame (white background, colored line)
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-
-            # Line center and frame center
-            line_center = x + w // 2
-            frame_center = frame.shape[1] // 2
-
-            # Calculate error
-            error = line_center - frame_center
-
-            # Calculate control signal using PID
-            control_signal = pid_control(error)
-
-            # Adjust motor speeds based on control signal
-            right_speed = base_speed - control_signal
-            left_speed = base_speed + control_signal
-
-            # Set motor speeds and move forward
-            set_speed(left_speed, right_speed)
-            movement = move_forward()
-
-        else:
-            # If no line is detected, reverse until a line is found
-            movement = move_reverse()
-
-        # Display metadata on the frame
-        metadata = [
-            f"Color: {display_color}",
-            f"Command: {movement}",
-            f"Outline: {outline_coords}",
-            f"Error: {error:.2f}"
-        ]
-        for i, text in enumerate(metadata):
-            cv2.putText(frame, text, (10, 30 + i * 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-
-        # Show the processed image (original frame with outline and metadata)
+        
+        # Convert to HSV color space for better color detection
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        
+        # Detect dominant color in the frame
+        detected_color = detect_color_dominant(hsv)
+        if detected_color:
+            current_color = detected_color
+        
+        # Create mask for the current color
+        if current_color:
+            if current_color == 'red':
+                # Handle red which is at both ends of HSV spectrum
+                mask1 = cv2.inRange(hsv, color_ranges['red']['lower'], color_ranges['red']['upper'])
+                mask2 = cv2.inRange(hsv, color_ranges['red2']['lower'], color_ranges['red2']['upper'])
+                mask = cv2.bitwise_or(mask1, mask2)
+            else:
+                mask = cv2.inRange(hsv, color_ranges[current_color]['lower'], color_ranges[current_color]['upper'])
+            
+            # Apply morphological operations to clean up the mask
+            kernel = np.ones((5,5), np.uint8)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+            
+            # Find contours in the masked image
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            action_text = ""
+            direction_text = ""
+            
+            if contours:
+                # Get the largest contour (assuming it is the line)
+                largest_contour = max(contours, key=cv2.contourArea)
+                x, y, w, h = cv2.boundingRect(largest_contour)
+                
+                # Draw bounding box on the original image
+                color_display = (0, 0, 0)  # default black
+                if current_color == 'red':
+                    color_display = (0, 0, 255)  # red in BGR
+                elif current_color == 'green':
+                    color_display = (0, 255, 0)  # green
+                elif current_color == 'blue':
+                    color_display = (255, 0, 0)  # blue
+                elif current_color == 'yellow':
+                    color_display = (0, 255, 255)  # yellow
+                
+                cv2.rectangle(frame, (x, y), (x + w, y + h), color_display, 2)
+                cv2.putText(frame, f"Tracking: {current_color}", (x, y-10), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, color_display, 2)
+                
+                # Line center and frame center
+                line_center = x + w // 2
+                frame_center = frame.shape[1] // 2
+                
+                # Calculate error
+                error = line_center - frame_center
+                
+                # Calculate control signal using PID
+                control_signal = pid_control(error)
+                
+                # Adjust motor speeds based on control signal
+                right_speed = base_speed - control_signal
+                left_speed = base_speed + control_signal
+                
+                # Set motor speeds and move forward
+                set_speed(left_speed, right_speed)
+                action_text = move_forward()
+                direction_text = f"Error: {error:.2f}, Control: {control_signal:.2f}, L: {left_speed:.1f}, R: {right_speed:.1f}"
+            else:
+                # If no line is detected, reverse until a line is found
+                action_text = move_reverse()
+                direction_text = "No line detected - Reversing"
+            
+            # Display metadata on the frame
+            cv2.putText(frame, action_text, (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            cv2.putText(frame, direction_text, (20, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            cv2.putText(frame, f"Tracking Color: {current_color}", (20, 90), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        
+        # Show the processed image
         if "DISPLAY" in os.environ:
-            cv2.imshow("Color Line Detection", frame)
-
+            cv2.imshow("Line Following Robot - Color Detection", frame)
+        
         # Press 'q' to exit
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
