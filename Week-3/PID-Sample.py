@@ -44,20 +44,20 @@ Kd = 0.5  # Derivative gain
 integral = 0
 previous_error = 0
 
-# HSV values from RGB conversion
-# Red (255, 0, 0) -> HSV: (0, 255, 255)
-# Blue (0, 0, 255) -> HSV: (120, 255, 255)
-# Green (0, 255, 0) -> HSV: (60, 255, 255)
-# Yellow (255, 255, 0) -> HSV: (30, 255, 255)
-# Black (0, 0, 0) -> HSV: (0, 0, 0) [Excluded]
+# HSV values corrected based on the RGB to HSV table
+# OpenCV uses H: 0-179, S: 0-255, V: 0-255 (not the standard H: 0-360, S: 0-100%, V: 0-100%)
+# Converting from standard to OpenCV: H * 0.5, S * 2.55, V * 2.55
 
-# Define HSV ranges for line detection
+# Define HSV ranges for line detection with correct OpenCV values
 color_ranges = {
-    'red1': ([0, 100, 100], [10, 255, 255]),      # Lower red range
-    'red2': ([170, 100, 100], [180, 255, 255]),   # Upper red range
-    'blue': ([110, 100, 100], [130, 255, 255]),   # Blue: centered at hue 120
-    'green': ([50, 100, 100], [70, 255, 255]),    # Green: centered at hue 60
-    'yellow': ([20, 100, 100], [40, 255, 255])    # Yellow: centered at hue 30
+    # Red spans across 0 and 180 in the hue circle, so we need two ranges
+    'red1': ([0, 100, 100], [10, 255, 255]),        # Lower red range
+    'red2': ([160, 100, 100], [179, 255, 255]),     # Upper red range (not 170-180)
+    'blue': ([110, 100, 100], [130, 255, 255]),     # Blue: ~240° in standard is ~120° in OpenCV
+    'green': ([45, 100, 100], [75, 255, 255]),      # Green: ~120° in standard is ~60° in OpenCV
+    'yellow': ([25, 100, 100], [35, 255, 255]),     # Yellow: ~60° in standard is ~30° in OpenCV
+    'cyan': ([85, 100, 100], [95, 255, 255]),       # Cyan: ~180° in standard is ~90° in OpenCV
+    'magenta': ([145, 100, 100], [155, 255, 255]),  # Magenta: ~300° in standard is ~150° in OpenCV
 }
 
 def set_speed(left_speed, right_speed):
