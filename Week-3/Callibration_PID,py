@@ -3,96 +3,7 @@ import numpy as np
 from picamera2 import Picamera2
 import RPi.GPIO as GPIO
 import os
-import sys
-import select
-import termios
-import tty
-
-def is_data():
-    """Check if there is data available to read from stdin without blocking."""
-    return select.select([sys.stdin], [], [], 0) == ([sys.stdin], [], [])
-
-def get_key():
-    """Read a single key from stdin without requiring Enter."""
-    old_settings = termios.tcgetattr(sys.stdin)
-    try:
-        tty.setcbreak(sys.stdin.fileno())
-        if is_data():
-            return sys.stdin.read(1)
-        return None
-    finally:
-        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
-
-def calibrate_colors(picam2):
-    """
-    Prompt user to position camera over each color, record HSV values, and generate color_ranges.
-    
-    Args:
-        picam2: Initialized Picamera2 object.
-    
-    Returns:
-        color_ranges: Dictionary of color names and their HSV ranges.
-    """
-    colors = ['Blue', 'Green', 'Red', 'Yellow', 'Black']
-    color_ranges = {}
-    
-    print("Starting color calibration. Position the camera over each color and press 'y' to record.")
-    print("Press 'q' to abort calibration.")
-    
-    for color in colors:
-        print(f"\nPlease position the camera over {color} and press 'y' to record (or 'q' to quit).")
-        while True:
-            frame = picam2.capture_array()
-            
-            # Calculate mean HSV of central region (100x100 pixels)
-            h, w = frame.shape[:2]
-            center_x, center_y = w // 2, h // 2
-            roi = frame[center_y-50:center_y+50, center_x-50:center_x+50]
-            hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-            mean_hsv = cv2.mean(hsv)[:3]
-            
-            # Display calibration prompt and HSV value
-            text = f"Calibrating {color} - Press 'y' to record (HSV: {tuple(int(v) for v in mean_hsv)})"
-            cv2.putText(frame, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-            if "DISPLAY" in os.environ:
-                cv2.imshow("Color Calibration", frame)
-            
-            # Check for user input
-            key = get_key()
-            if key == 'y':
-                # Generate HSV range: ±10 for Hue, ±50 for Saturation/Value
-                h, s, v = mean_hsv
-                if color == 'Red':
-                    # Handle Red with two ranges
-                    if h <= 10 or h >= 170:  # Near 0 or 180
-                        color_ranges['red1'] = ([max(0, h-10), max(0, s-50), max(0, v-50)],
-                                               [min(10, h+10), min(255, s+50), min(255, v+50)])
-                        color_ranges['red2'] = ([max(170, h-10), max(0, s-50), max(0, v-50)],
-                                               [min(179, h+10), min(255, s+50), min(255, v+50)])
-                    else:
-                        # Single range for Red if hue is not near split
-                        color_ranges['red'] = ([max(0, h-10), max(0, s-50), max(0, v-50)],
-                                              [min(179, h+10), min(255, s+50), min(255, v+50)])
-                else:
-                    color_ranges[color.lower()] = ([max(0, h-10), max(0, s-50), max(0, v-50)],
-                                                  [min(179, h+10), min(255, s+50), min(255, v+50)])
-                print(f"Recorded {color}: HSV {tuple(int(v) for v in mean_hsv)}")
-                break
-            elif key == 'q':
-                print("Calibration aborted.")
-                cv2.destroyAllWindows()
-                picam2.stop()
-                sys.exit(1)
-            
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                print("Calibration aborted.")
-                cv2.destroyAllWindows()
-                picam2.stop()
-                sys.exit(1)
-    
-    print("\nCalibration complete. Starting PID line following...")
-    cv2.destroyAllWindows()
-    return color_ranges
+import time
 
 # Define the detect_color function
 def detect_color(frame, color_ranges, tuning_file=None):
@@ -148,6 +59,83 @@ def detect_color(frame, color_ranges, tuning_file=None):
     
     return detected_color, largest_contour, combined_mask, mean_hsv
 
+def capture_color_calibration(picam2, color_name):
+    """
+    Capture the current frame and calculate the HSV range for calibration
+    
+    Args:
+        picam2: PiCamera2 object
+        color_name: Name of the color being calibrated
+        
+    Returns:
+        lower_hsv: Lower bound of HSV range
+        upper_hsv: Upper bound of HSV range
+    """
+    print(f"Position the camera over {color_name} line and press 'y' when ready...")
+    
+    while True:
+        frame = picam2.capture_array()
+        
+        # Display a center rectangle for targeting the color
+        h, w = frame.shape[:2]
+        center_x, center_y = w // 2, h // 2
+        rect_size = 50
+        cv2.rectangle(frame, 
+                      (center_x - rect_size, center_y - rect_size), 
+                      (center_x + rect_size, center_y + rect_size), 
+                      (0, 255, 0), 2)
+        
+        # Show the current HSV value in the target area
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        target_hsv = hsv[center_y-rect_size:center_y+rect_size, center_x-rect_size:center_x+rect_size]
+        mean_hsv = cv2.mean(target_hsv)[:3]
+        
+        # Display the mean HSV value
+        cv2.putText(frame, f"Mean HSV: {tuple(int(v) for v in mean_hsv)}", 
+                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        cv2.putText(frame, f"Calibrating {color_name}...", 
+                    (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        cv2.putText(frame, "Press 'y' to capture, 'q' to skip", 
+                    (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        
+        if "DISPLAY" in os.environ:
+            cv2.imshow("Color Calibration", frame)
+        
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('y'):
+            # Create HSV range with tolerance
+            h, s, v = mean_hsv
+            
+            # Different tolerance for different colors
+            if color_name == 'red':
+                # Special case for red which wraps around the hue spectrum
+                if h < 10:  # Lower red range
+                    lower_hsv = [0, max(0, s - 50), max(0, v - 50)]
+                    upper_hsv = [min(179, h + 10), min(255, s + 50), min(255, v + 50)]
+                else:  # Upper red range
+                    lower_hsv = [max(0, h - 10), max(0, s - 50), max(0, v - 50)]
+                    upper_hsv = [min(179, 179), min(255, s + 50), min(255, v + 50)]
+            elif color_name == 'black':
+                # Black has low value but can have any hue/saturation
+                lower_hsv = [0, 0, 0]
+                upper_hsv = [179, 255, max(30, int(v) + 20)]
+            else:
+                # Standard tolerance for other colors
+                h_tolerance = 15
+                s_tolerance = 50
+                v_tolerance = 50
+                
+                lower_hsv = [max(0, h - h_tolerance), max(0, s - s_tolerance), max(0, v - v_tolerance)]
+                upper_hsv = [min(179, h + h_tolerance), min(255, s + s_tolerance), min(255, v + v_tolerance)]
+                
+            print(f"Calibrated {color_name}: HSV range = {lower_hsv} to {upper_hsv}")
+            return lower_hsv, upper_hsv
+        
+        elif key == ord('q'):
+            # Skip this color and use default values
+            print(f"Skipped calibration for {color_name}, using default values")
+            return None, None
+
 # Initialize camera
 tuning_file = "/usr/share/libcamera/ipa/vc4/ov5647.json"
 picam2 = Picamera2()
@@ -159,9 +147,6 @@ else:
 config = picam2.create_preview_configuration({"size": (640, 480)})
 picam2.configure(config)
 picam2.start()
-
-# Calibrate colors
-color_ranges = calibrate_colors(picam2)
 
 # Define motor driver GPIO pins
 motor_in1 = 22  # Left motor forward
@@ -194,6 +179,19 @@ Kd = 0.5
 # PID variables
 integral = 0
 previous_error = 0
+
+# Default HSV ranges (will be overridden by calibration)
+default_color_ranges = {
+    'red1': ([0, 100, 100], [10, 255, 255]),
+    'red2': ([160, 100, 100], [179, 255, 255]),
+    'blue': ([110, 100, 100], [130, 255, 255]),
+    'green': ([45, 100, 100], [75, 255, 255]),
+    'yellow': ([25, 100, 100], [35, 255, 255]),
+    'black': ([0, 0, 0], [179, 255, 30])
+}
+
+# Initialize color_ranges with defaults
+color_ranges = default_color_ranges.copy()
 
 def set_speed(left_speed, right_speed):
     left_speed = max(0, min(100, left_speed))
@@ -236,8 +234,76 @@ def pid_control(error):
     previous_error = error
     return control_signal
 
-print("Press 'q' to exit the live feed.")
+def save_calibration(color_ranges, filename="color_calibration.txt"):
+    """Save calibration values to a file"""
+    with open(filename, 'w') as f:
+        for color, (lower, upper) in color_ranges.items():
+            f.write(f"{color}:{','.join(map(str, lower))}:{','.join(map(str, upper))}\n")
+    print(f"Calibration saved to {filename}")
 
+def load_calibration(filename="color_calibration.txt"):
+    """Load calibration values from a file"""
+    if not os.path.exists(filename):
+        print(f"Calibration file {filename} not found. Using default values.")
+        return default_color_ranges
+    
+    color_ranges = {}
+    try:
+        with open(filename, 'r') as f:
+            for line in f.readlines():
+                parts = line.strip().split(':')
+                if len(parts) == 3:
+                    color = parts[0]
+                    lower = list(map(int, parts[1].split(',')))
+                    upper = list(map(int, parts[2].split(',')))
+                    color_ranges[color] = (lower, upper)
+        print(f"Calibration loaded from {filename}")
+    except Exception as e:
+        print(f"Error loading calibration: {e}")
+        return default_color_ranges
+    
+    return color_ranges
+
+print("===== Color Line Follower with Calibration =====")
+print("Do you want to calibrate the colors? (y/n)")
+calibrate = input().lower() == 'y'
+
+if calibrate:
+    # Perform calibration for each color
+    colors_to_calibrate = {
+        'blue': 'blue',
+        'green': 'green',
+        'red': 'red1',  # We'll handle red1 and red2 together
+        'yellow': 'yellow',
+        'black': 'black'
+    }
+    
+    for display_name, color_key in colors_to_calibrate.items():
+        lower_hsv, upper_hsv = capture_color_calibration(picam2, display_name)
+        
+        if lower_hsv and upper_hsv:
+            color_ranges[color_key] = (lower_hsv, upper_hsv)
+            
+            # Special case for red which needs two ranges
+            if color_key == 'red1':
+                # Also update red2 for high-end of the hue spectrum
+                if lower_hsv[0] < 10:  # If we captured the lower red range
+                    # Set the upper red range accordingly
+                    red2_lower = [160, lower_hsv[1], lower_hsv[2]]
+                    red2_upper = [179, upper_hsv[1], upper_hsv[2]]
+                    color_ranges['red2'] = (red2_lower, red2_upper)
+    
+    # Save the calibration
+    save_calibration(color_ranges)
+else:
+    # Load previous calibration if available
+    color_ranges = load_calibration()
+
+# Wait for user to place the robot on the line
+print("Place the robot on the line and press Enter to start line following...")
+input()
+
+print("Press 'q' to exit the line following.")
 error = 0
 
 try:
