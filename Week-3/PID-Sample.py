@@ -3,6 +3,7 @@ import cv2
 import numpy as np
 import RPi.GPIO as GPIO
 import os
+import uuid
 
 # Initialize camera
 picam2 = Picamera2()
@@ -14,7 +15,7 @@ picam2.start()
 motor_in1 = 22  # Left motor forward
 motor_in2 = 27  # Left motor backward
 motor_in3 = 17  # Right motor forward
-motor_in4 = 4  # Right motor backward
+motor_in4 = 4   # Right motor backward
 
 # PWM pins for speed control
 ENA = 13  # Left motor speed control
@@ -32,17 +33,26 @@ pwm2.start(0)
 
 # Speed settings
 base_speed = 55  # Base speed for forward movement
-max_speed = 100   # Maximum speed for turns
+max_speed = 100  # Maximum speed for turns
 reverse_speed = 50  # Speed for reverse movement
 
 # PID parameters
 Kp = 0.5  # Proportional gain
-Ki = 0  # Integral gain
+Ki = 0    # Integral gain
 Kd = 0.5  # Derivative gain
 
 # PID variables
 integral = 0
 previous_error = 0
+
+# Color ranges in HSV for detection (tuned for white background)
+color_ranges = {
+    'black': ([0, 0, 0], [180, 255, 50]),
+    'red': ([0, 100, 100], [10, 255, 255]),  # Also check [170, 100, 100], [180, 255, 255] for red's second range
+    'green': ([35, 100, 100], [85, 255, 255]),
+    'yellow': ([20, 100, 100], [30, 255, 255]),
+    'blue': ([100, 100, 100], [130, 255, 255])
+}
 
 def set_speed(left_speed, right_speed):
     left_speed = max(0, min(100, left_speed))
@@ -56,6 +66,7 @@ def move_forward():
     GPIO.output(motor_in3, GPIO.HIGH)
     GPIO.output(motor_in4, GPIO.LOW)
     print("Moving Forward")
+    return "Moving Forward"
 
 def move_reverse():
     GPIO.output(motor_in1, GPIO.LOW)
@@ -64,6 +75,7 @@ def move_reverse():
     GPIO.output(motor_in4, GPIO.HIGH)
     set_speed(reverse_speed, reverse_speed)
     print("Moving Reverse")
+    return "Moving Reverse"
 
 def stop():
     set_speed(0, 0)
@@ -72,6 +84,7 @@ def stop():
     GPIO.output(motor_in3, GPIO.LOW)
     GPIO.output(motor_in4, GPIO.LOW)
     print("Stopping")
+    return "Stopped"
 
 def pid_control(error):
     global integral, previous_error
@@ -82,6 +95,46 @@ def pid_control(error):
     previous_error = error
     return control_signal
 
+def detect_color(frame):
+    # Convert to HSV for better color detection
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    max_area = 0
+    detected_color = None
+    largest_contour = None
+    combined_mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+
+    for color, (lower, upper) in color_ranges.items():
+        lower = np.array(lower, dtype=np.uint8)
+        upper = np.array(upper, dtype=np.uint8)
+        mask = cv2.inRange(hsv, lower, upper)
+
+        # Handle red's second range
+        if color == 'red':
+            lower_red2 = np.array([170, 100, 100], dtype=np.uint8)
+            upper_red2 = np.array([180, 255, 255], dtype=np.uint8)
+            mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
+            mask = cv2.bitwise_or(mask, mask2)
+
+        # Apply morphological operations to reduce noise
+        kernel = np.ones((5, 5), np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
+        # Find contours
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        combined_mask = cv2.bitwise_or(combined_mask, mask)
+
+        if contours:
+            # Get the largest contour for this color
+            contour = max(contours, key=cv2.contourArea)
+            area = cv2.contourArea(contour)
+            if area > max_area:
+                max_area = area
+                detected_color = color
+                largest_contour = contour
+
+    return detected_color, largest_contour, combined_mask
+
 print("Press 'q' to exit the live feed.")
 
 # Initialize error before the loop
@@ -91,27 +144,25 @@ try:
     while True:
         # Capture frame
         frame = picam2.capture_array()
-        
-        # Convert to grayscale
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        # Apply Binary Threshold for Black Line on White Background
-        _, threshold = cv2.threshold(gray, 100, 255, cv2.THRESH_BINARY_INV)
+        # Detect color and contour
+        detected_color, largest_contour, mask = detect_color(frame)
 
-        # Find contours in the thresholded image
-        contours, _ = cv2.findContours(threshold, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        movement = "No line detected"
+        outline_coords = "N/A"
+        display_color = detected_color if detected_color else "None"
 
-        if contours:
-            # Get the largest contour (assuming it is the black line)
-            largest_contour = max(contours, key=cv2.contourArea)
+        if largest_contour is not None:
+            # Get bounding box
             x, y, w, h = cv2.boundingRect(largest_contour)
+            outline_coords = f"({x}, {y}, {w}, {h})"
 
-            # Draw bounding box on the thresholded image (Black Color)
-            cv2.rectangle(threshold, (x, y), (x + w, y + h), 0, 2)
+            # Draw outline on the original frame (white background, colored line)
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
 
             # Line center and frame center
             line_center = x + w // 2
-            frame_center = threshold.shape[1] // 2
+            frame_center = frame.shape[1] // 2
 
             # Calculate error
             error = line_center - frame_center
@@ -125,21 +176,25 @@ try:
 
             # Set motor speeds and move forward
             set_speed(left_speed, right_speed)
-            move_forward()
-
-            # Display direction text in black
-            direction = f"Error: {error:.2f}, Control: {control_signal:.2f}"
-            cv2.putText(threshold, direction, (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
+            movement = move_forward()
 
         else:
             # If no line is detected, reverse until a line is found
-            move_reverse()
-            direction = "No line detected - Reversing"
-            cv2.putText(threshold, direction, (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 2)
+            movement = move_reverse()
 
-        # Show the processed image (White Background, Black Line)
+        # Display metadata on the frame
+        metadata = [
+            f"Color: {display_color}",
+            f"Command: {movement}",
+            f"Outline: {outline_coords}",
+            f"Error: {error:.2f}"
+        ]
+        for i, text in enumerate(metadata):
+            cv2.putText(frame, text, (10, 30 + i * 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+
+        # Show the processed image (original frame with outline and metadata)
         if "DISPLAY" in os.environ:
-            cv2.imshow("Line Detection (Black Line, White Background)", threshold)
+            cv2.imshow("Color Line Detection", frame)
 
         # Press 'q' to exit
         if cv2.waitKey(1) & 0xFF == ord('q'):
