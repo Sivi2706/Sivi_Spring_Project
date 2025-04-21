@@ -44,37 +44,21 @@ Kd = 0.5  # Derivative gain
 integral = 0
 previous_error = 0
 
-# Function to convert RGB to HSV
-def rgb_to_hsv(r, g, b):
-    rgb = np.uint8([[[r, g, b]]])
-    hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
-    return hsv[0][0]
+# HSV values from RGB conversion
+# Red (255, 0, 0) -> HSV: (0, 255, 255)
+# Blue (0, 0, 255) -> HSV: (120, 255, 255)
+# Green (0, 255, 0) -> HSV: (60, 255, 255)
+# Yellow (255, 255, 0) -> HSV: (30, 255, 255)
+# Black (0, 0, 0) -> HSV: (0, 0, 0) [Excluded]
 
-# Define target colors in RGB (0-255 scale)
-target_colors_rgb = {
-    'black': (0, 0, 0),
-    'red': (255, 0, 0),
-    'green': (0, 255, 0),
-    'yellow': (255, 255, 0),
-    'blue': (0, 0, 255)
+# Define HSV ranges for line detection
+color_ranges = {
+    'red1': ([0, 100, 100], [10, 255, 255]),      # Lower red range
+    'red2': ([170, 100, 100], [180, 255, 255]),   # Upper red range
+    'blue': ([110, 100, 100], [130, 255, 255]),   # Blue: centered at hue 120
+    'green': ([50, 100, 100], [70, 255, 255]),    # Green: centered at hue 60
+    'yellow': ([20, 100, 100], [40, 255, 255])    # Yellow: centered at hue 30
 }
-
-# Convert RGB to HSV and define ranges
-color_ranges = {}
-for color, (r, g, b) in target_colors_rgb.items():
-    hsv = rgb_to_hsv(r, g, b)
-    h, s, v = hsv
-    # Define ranges around the target HSV values
-    # Hue: ±10 (or special case for red), Saturation: 100-255, Value: 100-255
-    if color == 'red':
-        # Red has two hue ranges: 0-10 and 170-180
-        color_ranges['red1'] = ([max(0, h-10), 100, 100], [min(10, h+10), 255, 255])
-        color_ranges['red2'] = ([max(170, h-10), 100, 100], [180, 255, 255])
-    else:
-        color_ranges[color] = ([max(0, h-10), 100, 100], [min(180, h+10), 255, 255])
-
-# For black, use low value instead of hue
-color_ranges['black'] = ([0, 0, 0], [180, 255, 50])
 
 def set_speed(left_speed, right_speed):
     left_speed = max(0, min(100, left_speed))
@@ -201,7 +185,7 @@ try:
             movement = move_forward()
 
         else:
-            # If no line or shape is detected, reverse
+            # If no line is detected, reverse
             movement = move_reverse()
 
         # Display metadata on the frame
