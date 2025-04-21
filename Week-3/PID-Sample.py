@@ -44,20 +44,14 @@ Kd = 0.5  # Derivative gain
 integral = 0
 previous_error = 0
 
-# HSV values corrected based on the RGB to HSV table
-# OpenCV uses H: 0-179, S: 0-255, V: 0-255 (not the standard H: 0-360, S: 0-100%, V: 0-100%)
-# Converting from standard to OpenCV: H * 0.5, S * 2.55, V * 2.55
-
-# Define HSV ranges for line detection with correct OpenCV values
+# Define HSV ranges based on provided values, converted to OpenCV HSV (H: 0-179, S: 0-255, V: 0-255)
 color_ranges = {
-    # Red spans across 0 and 180 in the hue circle, so we need two ranges
-    'red1': ([0, 100, 100], [10, 255, 255]),        # Lower red range
-    'red2': ([160, 100, 100], [179, 255, 255]),     # Upper red range
-    'blue': ([110, 100, 100], [130, 255, 255]),     # Blue: ~240° in standard is ~120° in OpenCV
-    'green': ([45, 100, 100], [75, 255, 255]),      # Green: ~120° in standard is ~60° in OpenCV
-    'yellow': ([25, 100, 100], [35, 255, 255]),     # Yellow: ~60° in standard is ~30° in OpenCV
-    'cyan': ([85, 100, 100], [95, 255, 255]),       # Cyan: ~180° in standard is ~90° in OpenCV
-    'magenta': ([145, 100, 100], [155, 255, 255]),  # Magenta: ~300° in standard is ~150° in OpenCV
+    'black': ([0, 0, 0], [179, 50, 50]),           # Black: Very low saturation and value
+    'red1': ([0, 120, 120], [5, 255, 255]),        # Red lower range
+    'red2': ([175, 120, 120], [179, 255, 255]),    # Red upper range
+    'blue': ([100, 80, 80], [140, 255, 255]),      # Blue
+    'green': ([40, 80, 60], [80, 255, 150]),       # Green
+    'yellow': ([20, 80, 80], [40, 255, 255]),      # Yellow
 }
 
 def set_speed(left_speed, right_speed):
@@ -129,7 +123,6 @@ def detect_color(frame):
             area = cv2.contourArea(contour)
             if area > max_area:
                 max_area = area
-                # Map red1 and red2 to 'red'
                 detected_color = 'red' if color.startswith('red') else color
                 largest_contour = contour
 
@@ -138,6 +131,11 @@ def detect_color(frame):
                 cv2.drawContours(mask_temp, [contour], -1, 255, -1)
                 mean_hsv = cv2.mean(hsv, mask=mask_temp)[:3]
                 print(f"Color: {detected_color}, Mean HSV: {mean_hsv}, Range: {lower} to {upper}")
+
+    if detected_color is None:
+        # Log the entire frame's average HSV to diagnose undetected colors
+        mean_hsv_frame = cv2.mean(hsv)[:3]
+        print(f"No color detected, Frame Mean HSV: {mean_hsv_frame}")
 
     return detected_color, largest_contour, combined_mask
 
