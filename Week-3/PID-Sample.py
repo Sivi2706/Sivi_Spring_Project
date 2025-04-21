@@ -111,6 +111,7 @@ color_ranges = {
     'yellow': ([25, 100, 100], [35, 255, 255]),
     'cyan': ([85, 100, 100], [95, 255, 255]),
     'magenta': ([145, 100, 100], [155, 255, 255]),
+    'black': ([0, 0, 0], [179, 255, 30])  # Low value for black, calibrate carefully
 }
 
 def set_speed(left_speed, right_speed):
@@ -191,6 +192,7 @@ try:
         # Display metadata
         metadata = [
             color_code,
+            f"Color: {display_color}",
             f"Command: {movement}",
             f"Outline: {outline_coords}",
             f"Error: {error:.2f}"
