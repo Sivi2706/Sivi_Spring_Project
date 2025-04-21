@@ -190,6 +190,8 @@ def main():
 
             movement = "No line detected"
             outline_coords = "N/A"
+            left_speed = 0  # Default value
+            right_speed = 0  # Default value
 
             if largest_contour is not None:
                 x, y, w, h = cv2.boundingRect(largest_contour)
@@ -208,13 +210,15 @@ def main():
             else:
                 movement = move_reverse()
 
-            # Display metadata
+            # Display metadata, including left and right PWM
             color_code = f"Tracking: {color_name}"
             metadata = [
                 color_code,
                 f"Command: {movement}",
                 f"Outline: {outline_coords}",
-                f"Error: {error:.2f}"
+                f"Error: {error:.2f}",
+                f"Left PWM: {left_speed:.2f}",  # Display left PWM
+                f"Right PWM: {right_speed:.2f}"  # Display right PWM
             ]
             
             for i, text in enumerate(metadata):
@@ -257,5 +261,5 @@ def main():
         except Exception as e:
             print(f"Error during GPIO cleanup: {e}")
 
-if _name_ == "_main_":
+if __name__ == "__main__":
     main()
