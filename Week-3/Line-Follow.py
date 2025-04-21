@@ -149,7 +149,7 @@ def move_forward(right_pwm, left_pwm):
     GPIO.output(IN3, GPIO.LOW)
     GPIO.output(IN4, GPIO.HIGH)
     right_pwm.ChangeDutyCycle(BASE_SPEED)
-    left_pwm.ChangeDutyCycle(BASE_SPEED)
+    left_pwm.ChangeDutyCycle(TURN_SPEED)
 
 def move_backward(right_pwm, left_pwm, speed):
     GPIO.output(IN1, GPIO.LOW)
@@ -164,18 +164,8 @@ def stop_motors(right_pwm, left_pwm):
     left_pwm.ChangeDutyCycle(0)
     GPIO.output(IN1, GPIO.LOW)
     GPIO.output(IN2, GPIO.LOW)
-    GPIO.output(IN3, GPIO.LOW)
-    GPIO.output(IN4, GPIO.LOW)
+    GPIO.output(IN3, GPIOconfigurable) and display the detected color on the frame.
 
-# Initialize camera
-def setup_camera():
-    picam2 = Picamera2()
-    config = picam2.create_preview_configuration(main={"size": (FRAME_WIDTH, FRAME_HEIGHT)})
-    picam2.configure(config)
-    picam2.start()
-    return picam2
-
-# Modified line detection function to handle colored lines
 def detect_line(frame, target_color="red"):
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     
@@ -183,11 +173,19 @@ def detect_line(frame, target_color="red"):
     color_ranges = {
         "red": [
             (np.array([0, 120, 70]), np.array([10, 255, 255])),
-            (np.array([170, 120, 70]), np.array([180, 255, 255]))  # Red wraps around hue
+            (np.array([170, 120, 70]), np.array([180, 255, 255]))
         ],
         "green": [(np.array([40, 40, 40]), np.array([80, 255, 255]))],
         "yellow": [(np.array([20, 100, 100]), np.array([30, 255, 255]))],
         "black": [(np.array([0, 0, 0]), np.array([180, 255, 120]))]
+    }
+    
+    # Define outline colors for each line color
+    outline_colors = {
+        "red": (255, 0, 0),    # Blue outline for red line
+        "green": (0, 0, 255),  # Red outline for green line
+        "yellow": (0, 255, 0), # Green outline for yellow line
+        "black": (255, 255, 255) # White outline for black line
     }
     
     # Create mask based on target color
@@ -216,7 +214,8 @@ def detect_line(frame, target_color="red"):
         if valid_contours:
             largest_contour = max(valid_contours, key=cv2.contourArea)
             M = cv2.moments(largest_contour)
-            cv2.drawContours(frame, [largest_contour], -1, (0, 255, 0), 2)
+            # Use the specified outline color for the contour
+            cv2.drawContours(frame, [largest_contour], -1, outline_colors[detected_color], 2)
             if M["m00"] != 0:
                 cx = int(M["m10"] / M["m00"])
                 cy = int(M["m01"] / M["m00"])
@@ -227,6 +226,10 @@ def detect_line(frame, target_color="red"):
                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
                 cv2.putText(frame, f"Color: {detected_color}", (10, 60),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                # Add label above the contour
+                label = detected_color.capitalize()
+                cv2.putText(frame, label, (cx - 20, cy - 10),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, outline_colors[detected_color], 2)
                 return error, True, intersection, detected_color
     return 0, False, intersection, detected_color
 
@@ -253,7 +256,6 @@ def main():
     try:
         while True:
             frame = picam2.capture_array()
-            # Updated to unpack four return values
             error, line_found, intersection, detected_color = detect_line(frame, target_color)
             cv2.imshow("Line Follower", frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
