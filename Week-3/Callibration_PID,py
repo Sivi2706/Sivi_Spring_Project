@@ -103,38 +103,37 @@ def capture_color_calibration(picam2, color_name):
         
         key = cv2.waitKey(1) & 0xFF
         if key == ord('y'):
-            # Create HSV range with appropriate thresholds for each color
+            # Create HSV range with tolerance
             h, s, v = mean_hsv
             
-            # Define threshold values for each color component
-            h_threshold = 15
-            s_threshold = 50
-            v_threshold = 50
-            
-            # Different threshold handling for different colors
+            # Different tolerance for different colors
             if color_name == 'red':
                 # Special case for red which wraps around the hue spectrum
                 if h < 10:  # Lower red range
-                    lower_hsv = [0, max(0, s - s_threshold), max(0, v - v_threshold)]
-                    upper_hsv = [min(179, h + h_threshold), min(255, s + s_threshold), min(255, v + v_threshold)]
+                    lower_hsv = [0, max(0, s - 50), max(0, v - 50)]
+                    upper_hsv = [min(179, h + 10), min(255, s + 50), min(255, v + 50)]
                 else:  # Upper red range
-                    lower_hsv = [max(0, h - h_threshold), max(0, s - s_threshold), max(0, v - v_threshold)]
-                    upper_hsv = [179, min(255, s + s_threshold), min(255, v + v_threshold)]
+                    lower_hsv = [max(0, h - 10), max(0, s - 50), max(0, v - 50)]
+                    upper_hsv = [min(179, 179), min(255, s + 50), min(255, v + 50)]
             elif color_name == 'black':
                 # Black has low value but can have any hue/saturation
                 lower_hsv = [0, 0, 0]
-                upper_hsv = [179, 255, max(50, int(v) + 20)]  # Higher threshold for black's value
+                upper_hsv = [179, 255, max(30, int(v) + 20)]
             else:
-                # Standard thresholds for other colors
-                lower_hsv = [max(0, h - h_threshold), max(0, s - s_threshold), max(0, v - v_threshold)]
-                upper_hsv = [min(179, h + h_threshold), min(255, s + s_threshold), min(255, v + v_threshold)]
+                # Standard tolerance for other colors
+                h_tolerance = 15
+                s_tolerance = 50
+                v_tolerance = 50
+                
+                lower_hsv = [max(0, h - h_tolerance), max(0, s - s_tolerance), max(0, v - v_tolerance)]
+                upper_hsv = [min(179, h + h_tolerance), min(255, s + s_tolerance), min(255, v + v_tolerance)]
                 
             print(f"Calibrated {color_name}: HSV range = {lower_hsv} to {upper_hsv}")
             return lower_hsv, upper_hsv
         
         elif key == ord('q'):
-            # Skip this color calibration
-            print(f"Skipped calibration for {color_name}")
+            # Skip this color and use default values
+            print(f"Skipped calibration for {color_name}, using default values")
             return None, None
 
 # Initialize camera
@@ -181,15 +180,18 @@ Kd = 0.5
 integral = 0
 previous_error = 0
 
-# Start with empty color ranges - will be filled during calibration
-color_ranges = {
-    'red1': ([], []),
-    'red2': ([], []),
-    'blue': ([], []),
-    'green': ([], []),
-    'yellow': ([], []),
-    'black': ([], [])
+# Default HSV ranges (will be overridden by calibration)
+default_color_ranges = {
+    'red1': ([0, 100, 100], [10, 255, 255]),
+    'red2': ([160, 100, 100], [179, 255, 255]),
+    'blue': ([110, 100, 100], [130, 255, 255]),
+    'green': ([45, 100, 100], [75, 255, 255]),
+    'yellow': ([25, 100, 100], [35, 255, 255]),
+    'black': ([0, 0, 0], [179, 255, 30])
 }
+
+# Initialize color_ranges with defaults
+color_ranges = default_color_ranges.copy()
 
 def set_speed(left_speed, right_speed):
     left_speed = max(0, min(100, left_speed))
@@ -236,25 +238,16 @@ def save_calibration(color_ranges, filename="color_calibration.txt"):
     """Save calibration values to a file"""
     with open(filename, 'w') as f:
         for color, (lower, upper) in color_ranges.items():
-            if lower and upper:  # Only save if values exist
-                f.write(f"{color}:{','.join(map(str, lower))}:{','.join(map(str, upper))}\n")
+            f.write(f"{color}:{','.join(map(str, lower))}:{','.join(map(str, upper))}\n")
     print(f"Calibration saved to {filename}")
 
 def load_calibration(filename="color_calibration.txt"):
     """Load calibration values from a file"""
-    color_ranges = {
-        'red1': ([], []),
-        'red2': ([], []),
-        'blue': ([], []),
-        'green': ([], []),
-        'yellow': ([], []),
-        'black': ([], [])
-    }
-    
     if not os.path.exists(filename):
-        print(f"Calibration file {filename} not found. Need to calibrate.")
-        return color_ranges
+        print(f"Calibration file {filename} not found. Using default values.")
+        return default_color_ranges
     
+    color_ranges = {}
     try:
         with open(filename, 'r') as f:
             for line in f.readlines():
@@ -267,29 +260,13 @@ def load_calibration(filename="color_calibration.txt"):
         print(f"Calibration loaded from {filename}")
     except Exception as e:
         print(f"Error loading calibration: {e}")
+        return default_color_ranges
     
-    # Check if any color calibration is missing
-    missing_calibration = False
-    for color, (lower, upper) in color_ranges.items():
-        if not lower or not upper:
-            if color != 'red2':  # red2 is special, handled during red1 calibration
-                missing_calibration = True
-                print(f"Missing calibration for {color}")
-    
-    return color_ranges, missing_calibration
+    return color_ranges
 
 print("===== Color Line Follower with Calibration =====")
-
-# Try to load previous calibration
-color_ranges, missing_calibration = load_calibration()
-
-# Force calibration if any color is missing calibration values
-if missing_calibration:
-    print("Some color calibrations are missing. Calibration is required.")
-    calibrate = True
-else:
-    print("Do you want to recalibrate the colors? (y/n)")
-    calibrate = input().lower() == 'y'
+print("Do you want to calibrate the colors? (y/n)")
+calibrate = input().lower() == 'y'
 
 if calibrate:
     # Perform calibration for each color
@@ -318,29 +295,15 @@ if calibrate:
     
     # Save the calibration
     save_calibration(color_ranges)
-
-# Check if any color is still missing calibration after the calibration process
-missing_calibration = False
-for color, (lower, upper) in color_ranges.items():
-    if not lower or not upper:
-        if color != 'red2' or (color == 'red2' and not color_ranges['red1'][0]):
-            missing_calibration = True
-            print(f"Warning: Missing calibration for {color}")
-
-if missing_calibration:
-    print("Some colors are missing calibration! Line following may not work correctly.")
-    print("Do you want to continue anyway? (y/n)")
-    if input().lower() != 'y':
-        print("Exiting program...")
-        picam2.stop()
-        GPIO.cleanup()
-        exit()
+else:
+    # Load previous calibration if available
+    color_ranges = load_calibration()
 
 # Wait for user to place the robot on the line
 print("Place the robot on the line and press Enter to start line following...")
 input()
 
-print("Line following started. Press 'q' to exit.")
+print("Press 'q' to exit the line following.")
 error = 0
 
 try:
