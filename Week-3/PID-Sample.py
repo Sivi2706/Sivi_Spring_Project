@@ -5,68 +5,8 @@ import RPi.GPIO as GPIO
 import os
 import time
 
-# Define the detect_color function
-def detect_color(frame, color_ranges, tuning_file=None):
-    """
-    Detect the dominant color in the frame using HSV and return the color, largest contour,
-    combined mask, and mean HSV value of the contour.
-    
-    Args:
-        frame: Input image frame from the camera.
-        color_ranges: Dictionary of color names and their HSV ranges.
-        tuning_file: Path to the camera tuning JSON file (optional).
-    
-    Returns:
-        detected_color: Name of the detected color or None.
-        largest_contour: Largest contour of the detected color or None.
-        combined_mask: Combined mask of all detected colors.
-        mean_hsv: Mean HSV value of the largest contour or None.
-    """
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    
-    max_area = 0
-    detected_color = None
-    largest_contour = None
-    combined_mask = np.zeros(frame.shape[:2], dtype=np.uint8)
-    mean_hsv = None
-    
-    kernel = np.ones((5, 5), np.uint8)
-    
-    for color, (lower, upper) in color_ranges.items():
-        lower = np.array(lower, dtype=np.uint8)
-        upper = np.array(upper, dtype=np.uint8)
-        
-        mask = cv2.inRange(hsv, lower, upper)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-        mask = cv2.GaussianBlur(mask, (5, 5), 0)
-        
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        combined_mask = cv2.bitwise_or(combined_mask, mask)
-        
-        if contours:
-            contour = max(contours, key=cv2.contourArea)
-            area = cv2.contourArea(contour)
-            if area > max_area:
-                max_area = area
-                detected_color = 'red' if color.startswith('red') else color
-                largest_contour = contour
-                
-                mask_temp = np.zeros(frame.shape[:2], dtype=np.uint8)
-                cv2.drawContours(mask_temp, [contour], -1, 255, -1)
-                mean_hsv = cv2.mean(hsv, mask=mask_temp)[:3]
-                print(f"Color: {detected_color}, Mean HSV: {mean_hsv}, Range: {lower} to {upper}")
-    
-    return detected_color, largest_contour, combined_mask, mean_hsv
-
 # Initialize camera
-tuning_file = "/usr/share/libcamera/ipa/vc4/ov5647.json"
 picam2 = Picamera2()
-if os.path.exists(tuning_file):
-    picam2.load_tuning_file(tuning_file)
-    print(f"Loaded tuning file: {tuning_file}")
-else:
-    print(f"Warning: Tuning file {tuning_file} not found. Using default tuning.")
 config = picam2.create_preview_configuration({"size": (640, 480)})
 picam2.configure(config)
 picam2.start()
@@ -103,18 +43,90 @@ Kd = 0.5
 integral = 0
 previous_error = 0
 
-# Hardcoded HSV ranges based on provided values
-default_color_ranges = {
-    'red1': ([0, 167, 154], [10, 247, 234]),    # Lower red range
-    'red2': ([114, 167, 154], [134, 247, 234]), # Upper red range
-    'blue': ([6, 167, 60], [26, 255, 95]),      # Adjusted blue range
-    'green': ([31, 180, 110], [51, 255, 190]),
-    'yellow': ([84, 155, 189], [104, 235, 255]),
-    'black': ([0, 0, 0], [179, 78, 50])         # Adjusted black range
+# Define all available color ranges
+all_color_ranges = {
+    'red': [
+        ([0, 167, 154], [10, 247, 234]),    # Lower red range
+        ([114, 167, 154], [134, 247, 234])  # Upper red range
+    ],
+    'blue': [
+        ([6, 167, 60], [26, 255, 95])
+    ],
+    'green': [
+        ([31, 180, 110], [51, 255, 190])
+    ],
+    'yellow': [
+        ([84, 155, 189], [104, 235, 255])
+    ],
+    'black': [
+        ([0, 0, 0], [179, 78, 50])
+    ]
 }
 
-# Initialize color_ranges
-color_ranges = default_color_ranges.copy()
+# Function to get user's color choice
+def get_color_choice():
+    print("\nAvailable line colors to follow:")
+    print("r = red")
+    print("b = blue")
+    print("g = green")
+    print("y = yellow")
+    print("k = black")
+    print("q = quit program")
+    
+    while True:
+        choice = input("\nEnter line color (r/b/g/y/k): ").lower()
+        if choice == 'q':
+            return None
+        elif choice == 'r':
+            return 'red'
+        elif choice == 'b':
+            return 'blue'
+        elif choice == 'g':
+            return 'green'
+        elif choice == 'y':
+            return 'yellow'
+        elif choice == 'k':
+            return 'black'
+        else:
+            print("Invalid choice. Please try again.")
+
+def detect_color(frame, color_name):
+    """
+    Detect the specified color in the frame using HSV
+    """
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    max_area = 0
+    largest_contour = None
+    mean_hsv = None
+    
+    kernel = np.ones((5, 5), np.uint8)
+    
+    # Get all ranges for the specified color
+    color_ranges = all_color_ranges.get(color_name, [])
+    
+    for lower, upper in color_ranges:
+        lower = np.array(lower, dtype=np.uint8)
+        upper = np.array(upper, dtype=np.uint8)
+        
+        mask = cv2.inRange(hsv, lower, upper)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        mask = cv2.GaussianBlur(mask, (5, 5), 0)
+        
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        if contours:
+            contour = max(contours, key=cv2.contourArea)
+            area = cv2.contourArea(contour)
+            if area > max_area:
+                max_area = area
+                largest_contour = contour
+                
+                mask_temp = np.zeros(frame.shape[:2], dtype=np.uint8)
+                cv2.drawContours(mask_temp, [contour], -1, 255, -1)
+                mean_hsv = cv2.mean(hsv, mask=mask_temp)[:3]
+    
+    return largest_contour, mean_hsv
 
 def set_speed(left_speed, right_speed):
     left_speed = max(0, min(100, left_speed))
@@ -157,80 +169,93 @@ def pid_control(error):
     previous_error = error
     return control_signal
 
-print("===== Color Line Follower =====")
-# Wait for user to place the robot on the line
-print("Place the robot on the line and press Enter to start line following...")
-input()
+def main():
+    print("===== Color Line Follower =====")
+    
+    # Get user's color choice
+    color_name = get_color_choice()
+    if color_name is None:
+        return
+    
+    print(f"\nFollowing {color_name} line. Press 'q' to exit or change color.")
+    print("Place the robot on the line to begin...")
+    
+    error = 0
+    
+    try:
+        while True:
+            frame = picam2.capture_array()
 
-print("Press 'q' to exit the line following.")
-error = 0
+            largest_contour, mean_hsv = detect_color(frame, color_name)
 
-try:
-    while True:
-        frame = picam2.capture_array()
+            movement = "No line detected"
+            outline_coords = "N/A"
 
-        detected_color, largest_contour, mask, mean_hsv = detect_color(frame, color_ranges, tuning_file)
+            if largest_contour is not None:
+                x, y, w, h = cv2.boundingRect(largest_contour)
+                outline_coords = f"({x}, {y}, {w}, {h})"
+                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                
+                line_center = x + w // 2
+                frame_center = frame.shape[1] // 2
+                error = line_center - frame_center
+                control_signal = pid_control(error)
+                
+                right_speed = base_speed - control_signal
+                left_speed = base_speed + control_signal
+                set_speed(left_speed, right_speed)
+                movement = move_forward()
+            else:
+                movement = move_reverse()
 
-        movement = "No line detected"
-        outline_coords = "N/A"
-        display_color = detected_color if detected_color else "None"
-
-        if largest_contour is not None:
-            x, y, w, h = cv2.boundingRect(largest_contour)
-            outline_coords = f"({x}, {y}, {w}, {h})"
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+            # Display metadata
+            color_code = f"Tracking: {color_name}"
+            metadata = [
+                color_code,
+                f"Command: {movement}",
+                f"Outline: {outline_coords}",
+                f"Error: {error:.2f}"
+            ]
             
-            line_center = x + w // 2
-            frame_center = frame.shape[1] // 2
-            error = line_center - frame_center
-            control_signal = pid_control(error)
-            
-            right_speed = base_speed - control_signal
-            left_speed = base_speed + control_signal
-            set_speed(left_speed, right_speed)
-            movement = move_forward()
-        else:
-            movement = move_reverse()
+            for i, text in enumerate(metadata):
+                cv2.putText(frame, text, (10, 30 + i * 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
-        # Format color code as mean HSV value
-        color_code = f"Color Code: {tuple(int(v) for v in mean_hsv) if mean_hsv is not None else 'None'}"
+            if "DISPLAY" in os.environ:
+                cv2.imshow(f"Color Line Detection - Following {color_name}", frame)
 
-        # Display metadata
-        metadata = [
-            color_code,
-            f"Color: {display_color}",
-            f"Command: {movement}",
-            f"Outline: {outline_coords}",
-            f"Error: {error:.2f}"
-        ]
-        for i, text in enumerate(metadata):
-            cv2.putText(frame, text, (10, 30 + i * 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
+                break
+            elif key == ord('c'):
+                # Allow changing color while running
+                stop()
+                color_name = get_color_choice()
+                if color_name is None:
+                    break
+                print(f"\nNow following {color_name} line...")
 
-        if "DISPLAY" in os.environ:
-            cv2.imshow("Color Line Detection", frame)
+    except KeyboardInterrupt:
+        print("Stopping robot...")
 
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
-
-except KeyboardInterrupt:
-    print("Stopping robot...")
-
-except Exception as e:
-    print("Error:", e)
-
-finally:
-    try:
-        stop()
-        pwm1.stop()
-        pwm2.stop()
     except Exception as e:
-        print(f"Error during PWM cleanup: {e}")
-    try:
-        cv2.destroyAllWindows()
-        picam2.stop()
-    except Exception as e:
-        print(f"Error during camera cleanup: {e}")
-    try:
-        GPIO.cleanup()
-    except Exception as e:
-        print(f"Error during GPIO cleanup: {e}")
+        print("Error:", e)
+
+    finally:
+        try:
+            stop()
+            pwm1.stop()
+            pwm2.stop()
+        except Exception as e:
+            print(f"Error during PWM cleanup: {e}")
+        try:
+            cv2.destroyAllWindows()
+            picam2.stop()
+        except Exception as e:
+            print(f"Error during camera cleanup: {e}")
+        try:
+            GPIO.cleanup()
+        except Exception as e:
+            print(f"Error during GPIO cleanup: {e}")
+
+if _name_ == "_main_":
+    main()
