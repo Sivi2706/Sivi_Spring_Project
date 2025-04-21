@@ -1,14 +1,79 @@
-from picamera2 import Picamera2
 import cv2
 import numpy as np
+from picamera2 import Picamera2
 import RPi.GPIO as GPIO
 import os
 
-# Initialize camera with tuning file
-tuning_file = "/usr/share/libcamera/ipa/pisp/imx219.json"  # Adjust for your sensor and platform
+# Define the detect_color function
+def detect_color(frame, color_ranges, tuning_file=None):
+    """
+    Detect the dominant color in the frame using HSV and return the color and largest contour.
+    Incorporates camera tuning and adaptive noise reduction.
+    
+    Args:
+        frame: Input image frame from the camera.
+        color_ranges: Dictionary of color names and their HSV ranges.
+        tuning_file: Path to the camera tuning JSON file (optional).
+    
+    Returns:
+        detected_color: Name of the detected color or None.
+        largest_contour: Largest contour of the detected color or None.
+        combined_mask: Combined mask of all detected colors.
+    """
+    # Convert to HSV
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    
+    max_area = 0
+    detected_color = None
+    largest_contour = None
+    combined_mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+    
+    # Adaptive noise reduction parameters
+    kernel = np.ones((5, 5), np.uint8)
+    
+    for color, (lower, upper) in color_ranges.items():
+        lower = np.array(lower, dtype=np.uint8)
+        upper = np.array(upper, dtype=np.uint8)
+        
+        # Create mask
+        mask = cv2.inRange(hsv, lower, upper)
+        
+        # Apply adaptive morphological operations
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        
+        # Optional: Apply Gaussian blur to reduce noise
+        mask = cv2.GaussianBlur(mask, (5, 5), 0)
+        
+        # Find contours
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        combined_mask = cv2.bitwise_or(combined_mask, mask)
+        
+        if contours:
+            # Get the largest contour for this color
+            contour = max(contours, key=cv2.contourArea)
+            area = cv2.contourArea(contour)
+            if area > max_area:
+                max_area = area
+                detected_color = 'red' if color.startswith('red') else color
+                largest_contour = contour
+                
+                # Debug: Calculate average HSV of the contour
+                mask_temp = np.zeros(frame.shape[:2], dtype=np.uint8)
+                cv2.drawContours(mask_temp, [contour], -1, 255, -1)
+                mean_hsv = cv2.mean(hsv, mask=mask_temp)[:3]
+                print(f"Color: {detected_color}, Mean HSV: {mean_hsv}, Range: {lower} to {upper}")
+    
+    return detected_color, largest_contour, combined_mask
+
+# Initialize camera
+tuning_file = "/usr/share/libcamera/ipa/vc4/ov5647.json"  # Use OV5647 tuning file if available
 picam2 = Picamera2()
 if os.path.exists(tuning_file):
     picam2.load_tuning_file(tuning_file)
+    print(f"Loaded tuning file: {tuning_file}")
+else:
+    print(f"Warning: Tuning file {tuning_file} not found. Using default tuning.")
 config = picam2.create_preview_configuration()
 picam2.configure(config)
 picam2.start()
@@ -45,7 +110,7 @@ Kd = 0.5
 integral = 0
 previous_error = 0
 
-# HSV ranges (calibrated based on Macbeth chart images)
+# HSV ranges (calibrated for OV5647, adjust based on your environment)
 color_ranges = {
     'red1': ([0, 100, 100], [10, 255, 255]),
     'red2': ([160, 100, 100], [179, 255, 255]),
@@ -155,8 +220,20 @@ except KeyboardInterrupt:
 except Exception as e:
     print("Error:", e)
 
-# Cleanup
-stop()
-cv2.destroyAllWindows()
-picam2.stop()
-GPIO.cleanup()
+finally:
+    # Proper cleanup to avoid PWM TypeError
+    try:
+        stop()
+        pwm1.stop()
+        pwm2.stop()
+    except Exception as e:
+        print(f"Error during PWM cleanup: {e}")
+    try:
+        cv2.destroyAllWindows()
+        picam2.stop()
+    except Exception as e:
+        print(f"Error during camera cleanup: {e}")
+    try:
+        GPIO.cleanup()
+    except Exception as e:
+        print(f"Error during GPIO cleanup: {e}")
