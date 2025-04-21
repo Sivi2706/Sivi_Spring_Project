@@ -7,8 +7,8 @@ import os
 # Define the detect_color function
 def detect_color(frame, color_ranges, tuning_file=None):
     """
-    Detect the dominant color in the frame using HSV and return the color and largest contour.
-    Incorporates camera tuning and adaptive noise reduction.
+    Detect the dominant color in the frame using HSV and return the color, largest contour,
+    combined mask, and mean HSV value of the contour.
     
     Args:
         frame: Input image frame from the camera.
@@ -19,6 +19,7 @@ def detect_color(frame, color_ranges, tuning_file=None):
         detected_color: Name of the detected color or None.
         largest_contour: Largest contour of the detected color or None.
         combined_mask: Combined mask of all detected colors.
+        mean_hsv: Mean HSV value of the largest contour or None.
     """
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     
@@ -26,6 +27,7 @@ def detect_color(frame, color_ranges, tuning_file=None):
     detected_color = None
     largest_contour = None
     combined_mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+    mean_hsv = None
     
     kernel = np.ones((5, 5), np.uint8)
     
@@ -54,7 +56,7 @@ def detect_color(frame, color_ranges, tuning_file=None):
                 mean_hsv = cv2.mean(hsv, mask=mask_temp)[:3]
                 print(f"Color: {detected_color}, Mean HSV: {mean_hsv}, Range: {lower} to {upper}")
     
-    return detected_color, largest_contour, combined_mask
+    return detected_color, largest_contour, combined_mask, mean_hsv
 
 # Initialize camera
 tuning_file = "/usr/share/libcamera/ipa/vc4/ov5647.json"
@@ -160,7 +162,7 @@ try:
     while True:
         frame = picam2.capture_array()
 
-        detected_color, largest_contour, mask = detect_color(frame, color_ranges, tuning_file)
+        detected_color, largest_contour, mask, mean_hsv = detect_color(frame, color_ranges, tuning_file)
 
         movement = "No line detected"
         outline_coords = "N/A"
@@ -183,20 +185,18 @@ try:
         else:
             movement = move_reverse()
 
-        # Display color code prominently
-        color_code = f"Color Code: {display_color}"
-        # Draw with black outline for readability
-        cv2.putText(frame, color_code, (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 3)
-        cv2.putText(frame, color_code, (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
+        # Format color code as mean HSV value
+        color_code = f"Color Code: {tuple(int(v) for v in mean_hsv) if mean_hsv is not None else 'None'}"
 
-        # Display additional metadata
+        # Display metadata
         metadata = [
+            color_code,
             f"Command: {movement}",
             f"Outline: {outline_coords}",
             f"Error: {error:.2f}"
         ]
         for i, text in enumerate(metadata):
-            cv2.putText(frame, text, (10, 80 + i * 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            cv2.putText(frame, text, (10, 30 + i * 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
         if "DISPLAY" in os.environ:
             cv2.imshow("Color Line Detection", frame)
