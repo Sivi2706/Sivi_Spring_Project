@@ -44,12 +44,12 @@ Kd = 0.5  # Derivative gain
 integral = 0
 previous_error = 0
 
-# Define HSV ranges based on provided values, converted to OpenCV HSV (H: 0-179, S: 0-255, V: 0-255)
+# Adjusted HSV ranges to fix blue being detected as red
 color_ranges = {
-    'black': ([0, 0, 0], [179, 50, 50]),           # Black: Very low saturation and value
-    'red1': ([0, 120, 120], [5, 255, 255]),        # Red lower range
-    'red2': ([175, 120, 120], [179, 255, 255]),    # Red upper range
-    'blue': ([100, 80, 80], [140, 255, 255]),      # Blue
+    'black': ([0, 0, 0], [179, 50, 50]),           # Black
+    'red1': ([0, 150, 150], [3, 255, 255]),        # Tightened red lower range
+    'red2': ([177, 150, 150], [179, 255, 255]),    # Tightened red upper range
+    'blue': ([90, 60, 60], [150, 255, 255]),       # Widened blue range to capture shifted hues
     'green': ([40, 80, 60], [80, 255, 150]),       # Green
     'yellow': ([20, 80, 80], [40, 255, 255]),      # Yellow
 }
@@ -95,7 +95,24 @@ def pid_control(error):
     previous_error = error
     return control_signal
 
+def adjust_white_balance(frame):
+    # Simple white balance by scaling each channel
+    b, g, r = cv2.split(frame)
+    b_avg = np.mean(b)
+    g_avg = np.mean(g)
+    r_avg = np.mean(r)
+    avg = (b_avg + g_avg + r_avg) / 3
+    if avg == 0:
+        return frame
+    b = np.clip(b * (avg / b_avg), 0, 255).astype(np.uint8)
+    g = np.clip(g * (avg / g_avg), 0, 255).astype(np.uint8)
+    r = np.clip(r * (avg / r_avg), 0, 255).astype(np.uint8)
+    return cv2.merge((b, g, r))
+
 def detect_color(frame):
+    # Apply white balance
+    frame = adjust_white_balance(frame)
+    
     # Convert to HSV
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     max_area = 0
