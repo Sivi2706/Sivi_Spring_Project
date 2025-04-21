@@ -149,7 +149,7 @@ def move_forward(right_pwm, left_pwm):
     GPIO.output(IN3, GPIO.LOW)
     GPIO.output(IN4, GPIO.HIGH)
     right_pwm.ChangeDutyCycle(BASE_SPEED)
-    left_pwm.ChangeDutyCycle(TURN_SPEED)
+    left_pwm.ChangeDutyCycle(BASE_SPEED)
 
 def move_backward(right_pwm, left_pwm, speed):
     GPIO.output(IN1, GPIO.LOW)
@@ -164,8 +164,18 @@ def stop_motors(right_pwm, left_pwm):
     left_pwm.ChangeDutyCycle(0)
     GPIO.output(IN1, GPIO.LOW)
     GPIO.output(IN2, GPIO.LOW)
-    GPIO.output(IN3, GPIOconfigurable) and display the detected color on the frame.
+    GPIO.output(IN3, GPIO.LOW)
+    GPIO.output(IN4, GPIO.LOW)
 
+# Initialize camera
+def setup_camera():
+    picam2 = Picamera2()
+    config = picam2.create_preview_configuration(main={"size": (FRAME_WIDTH, FRAME_HEIGHT)})
+    picam2.configure(config)
+    picam2.start()
+    return picam2
+
+# Line detection function with colored lines
 def detect_line(frame, target_color="red"):
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     
@@ -214,7 +224,6 @@ def detect_line(frame, target_color="red"):
         if valid_contours:
             largest_contour = max(valid_contours, key=cv2.contourArea)
             M = cv2.moments(largest_contour)
-            # Use the specified outline color for the contour
             cv2.drawContours(frame, [largest_contour], -1, outline_colors[detected_color], 2)
             if M["m00"] != 0:
                 cx = int(M["m10"] / M["m00"])
@@ -226,7 +235,6 @@ def detect_line(frame, target_color="red"):
                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
                 cv2.putText(frame, f"Color: {detected_color}", (10, 60),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-                # Add label above the contour
                 label = detected_color.capitalize()
                 cv2.putText(frame, label, (cx - 20, cy - 10),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, outline_colors[detected_color], 2)
@@ -292,7 +300,7 @@ def main():
                     frame = picam2.capture_array()
                     error, line_found, intersection, detected_color = detect_line(frame, target_color)
                     if intersection:
-                        print("Intersection detected. Centering servo to 90° and adjusting.")
+                        print("Intersection detected. Centering servo to 90 degrees and adjusting.")
                         set_servo_angle_simple(servo_pwm, 90)
                         state = "NORMAL"
                     elif line_found:
