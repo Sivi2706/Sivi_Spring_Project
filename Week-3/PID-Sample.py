@@ -138,7 +138,7 @@ def stop():
     set_speed(0, 0)
     GPIO.output(motor_in1, GPIO.LOW)
     GPIO.output(motor_in2, GPIO.LOW)
-    GPIO.output(motor_in3, GPIO.LOW)  # Fixed typo
+    GPIO.output(motor_in3, GPIO.LOW)
     GPIO.output(motor_in4, GPIO.LOW)
     print("Stopping")
     return "Stopped"
@@ -183,14 +183,20 @@ try:
         else:
             movement = move_reverse()
 
+        # Display color code prominently
+        color_code = f"Color Code: {display_color}"
+        # Draw with black outline for readability
+        cv2.putText(frame, color_code, (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 3)
+        cv2.putText(frame, color_code, (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
+
+        # Display additional metadata
         metadata = [
-            f"Color: {display_color}",
             f"Command: {movement}",
             f"Outline: {outline_coords}",
             f"Error: {error:.2f}"
         ]
         for i, text in enumerate(metadata):
-            cv2.putText(frame, text, (10, 30 + i * 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            cv2.putText(frame, text, (10, 80 + i * 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
         if "DISPLAY" in os.environ:
             cv2.imshow("Color Line Detection", frame)
