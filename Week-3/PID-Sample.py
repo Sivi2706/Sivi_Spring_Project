@@ -3,6 +3,7 @@ import numpy as np
 from picamera2 import Picamera2
 import RPi.GPIO as GPIO
 import os
+import time
 
 # Define the detect_color function
 def detect_color(frame, color_ranges, tuning_file=None):
@@ -102,17 +103,18 @@ Kd = 0.5
 integral = 0
 previous_error = 0
 
-# HSV ranges (calibrated for OV5647, adjust based on your environment)
-color_ranges = {
-    'red1': ([0, 100, 100], [10, 255, 255]),
-    'red2': ([160, 100, 100], [179, 255, 255]),
-    'blue': ([110, 100, 100], [130, 255, 255]),
-    'green': ([45, 100, 100], [75, 255, 255]),
-    'yellow': ([25, 100, 100], [35, 255, 255]),
-    'cyan': ([85, 100, 100], [95, 255, 255]),
-    'magenta': ([145, 100, 100], [155, 255, 255]),
-    'black': ([0, 0, 0], [179, 255, 30])  # Low value for black, calibrate carefully
+# Hardcoded HSV ranges based on provided values
+default_color_ranges = {
+    'red1': ([0, 167, 154], [10, 247, 234]),    # Lower red range
+    'red2': ([114, 167, 154], [134, 247, 234]), # Upper red range
+    'blue': ([6, 167, 60], [26, 255, 95]),      # Adjusted blue range
+    'green': ([31, 180, 110], [51, 255, 190]),
+    'yellow': ([84, 155, 189], [104, 235, 255]),
+    'black': ([0, 0, 0], [179, 78, 50])         # Adjusted black range
 }
+
+# Initialize color_ranges
+color_ranges = default_color_ranges.copy()
 
 def set_speed(left_speed, right_speed):
     left_speed = max(0, min(100, left_speed))
@@ -155,8 +157,12 @@ def pid_control(error):
     previous_error = error
     return control_signal
 
-print("Press 'q' to exit the live feed.")
+print("===== Color Line Follower =====")
+# Wait for user to place the robot on the line
+print("Place the robot on the line and press Enter to start line following...")
+input()
 
+print("Press 'q' to exit the line following.")
 error = 0
 
 try:
@@ -227,4 +233,4 @@ finally:
     try:
         GPIO.cleanup()
     except Exception as e:
-        print(f"Error during GPIO cleanup: {e}")
+        print(f"Error during GPIO cleanup: {e}")

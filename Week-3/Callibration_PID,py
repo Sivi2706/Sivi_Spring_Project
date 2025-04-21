@@ -119,12 +119,18 @@ def capture_color_calibration(picam2, color_name):
                 # Black has low value but can have any hue/saturation
                 lower_hsv = [0, 0, 0]
                 upper_hsv = [179, 255, max(30, int(v) + 20)]
+            elif color_name == 'blue':
+                # Blue with tolerances to avoid black overlap
+                h_tolerance = 15
+                s_tolerance = 50
+                v_tolerance = 50
+                lower_hsv = [max(0, h - h_tolerance), max(0, s - s_tolerance), max(60, v - v_tolerance)]  # Enforce min Value=60
+                upper_hsv = [min(179, h + h_tolerance), min(255, s + s_tolerance), min(255, v + v_tolerance)]
             else:
                 # Standard tolerance for other colors
                 h_tolerance = 15
                 s_tolerance = 50
                 v_tolerance = 50
-                
                 lower_hsv = [max(0, h - h_tolerance), max(0, s - s_tolerance), max(0, v - v_tolerance)]
                 upper_hsv = [min(179, h + h_tolerance), min(255, s + s_tolerance), min(255, v + v_tolerance)]
                 
@@ -180,11 +186,11 @@ Kd = 0.5
 integral = 0
 previous_error = 0
 
-# Default HSV ranges (will be overridden by calibration)
+# Default HSV ranges (updated blue range)
 default_color_ranges = {
     'red1': ([0, 100, 100], [10, 255, 255]),
     'red2': ([160, 100, 100], [179, 255, 255]),
-    'blue': ([110, 100, 100], [130, 255, 255]),
+    'blue': ([1, 157, 60], [31, 255, 115]),  # Updated blue range
     'green': ([45, 100, 100], [75, 255, 255]),
     'yellow': ([25, 100, 100], [35, 255, 255]),
     'black': ([0, 0, 0], [179, 255, 30])
