@@ -52,7 +52,7 @@ previous_error = 0
 color_ranges = {
     # Red spans across 0 and 180 in the hue circle, so we need two ranges
     'red1': ([0, 100, 100], [10, 255, 255]),        # Lower red range
-    'red2': ([160, 100, 100], [179, 255, 255]),     # Upper red range (not 170-180)
+    'red2': ([160, 100, 100], [179, 255, 255]),     # Upper red range
     'blue': ([110, 100, 100], [130, 255, 255]),     # Blue: ~240° in standard is ~120° in OpenCV
     'green': ([45, 100, 100], [75, 255, 255]),      # Green: ~120° in standard is ~60° in OpenCV
     'yellow': ([25, 100, 100], [35, 255, 255]),     # Yellow: ~60° in standard is ~30° in OpenCV
