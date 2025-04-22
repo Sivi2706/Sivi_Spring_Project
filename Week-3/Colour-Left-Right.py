@@ -10,27 +10,22 @@ IN3, IN4 = 17, 4          # Right motor control
 ENA, ENB = 13, 12         # PWM pins for motors (ENA = Right, ENB = Left)
 encoderPinRight = 23      # Right encoder
 encoderPinLeft = 24       # Left encoder
-ServoMotor = 18           # Servo motor PWM for the camera
+ServoMotor = 18           # Servo motor PWM pin (kept but not used)
 
 # Constants
 WHEEL_DIAMETER = 4.05      # cm
 PULSES_PER_REVOLUTION = 20
 WHEEL_CIRCUMFERENCE = np.pi * WHEEL_DIAMETER  # cm
 
-# Servo motor parameters
-SERVO_MIN_DUTY = 2.5       # Duty cycle for 0 degrees
-SERVO_MAX_DUTY = 12.5      # Duty cycle for 180 degrees
-SERVO_FREQ = 50            # 50Hz frequency for servo
-
 # Line following parameters
 BASE_SPEED = 45           # Base motor speed (0-100)
-TURN_SPEED = 60            # Speed for pivot turns (0-100)
+TURN_SPEED = 60           # Speed for pivot turns (0-100)
 MIN_CONTOUR_AREA = 1000    # Minimum area for valid contours
 FRAME_WIDTH = 640          # Camera frame width
 FRAME_HEIGHT = 480         # Camera frame height
 
 # Threshold for turning
-TURN_THRESHOLD = 100        # Error threshold for pivoting
+TURN_THRESHOLD = 100       # Error threshold for pivoting
 
 # Recovery parameters
 REVERSE_SPEED = 40         # Speed when reversing
@@ -39,14 +34,14 @@ REVERSE_SPEED = 40         # Speed when reversing
 right_counter = 0
 left_counter = 0
 
-# Define all available color ranges (HSV format) - Adjusted for better recognition
+# Define all available color ranges (HSV format)
 all_color_ranges = {
     'red': [
         ([0, 167, 154], [10, 247, 234]),    # Lower red range
         ([170, 167, 154], [180, 247, 234])  # Upper red range
     ],
     'blue': [
-        ([90, 130, 60], [140, 255, 255])    # Widened blue range to catch light blue
+        ([100, 167, 60], [130, 255, 95])    # Adjusted blue range
     ],
     'green': [
         ([40, 180, 110], [75, 255, 190])    # Adjusted green range
@@ -58,9 +53,6 @@ all_color_ranges = {
         ([0, 0, 0], [179, 78, 50])          # Original black range
     ]
 }
-
-# Default color priority (can be changed by user input)
-COLOR_PRIORITY = ['red', 'blue', 'green', 'yellow', 'black']
 
 # Function to get user's color priority choice
 def get_color_choices():
@@ -137,24 +129,7 @@ def setup_gpio():
     right_pwm.start(0)
     left_pwm.start(0)
     
-    # Set up PWM for servo
-    GPIO.setup(ServoMotor, GPIO.OUT)
-    servo_pwm = GPIO.PWM(ServoMotor, SERVO_FREQ)
-    servo_pwm.start(0)
-    
-    return right_pwm, left_pwm, servo_pwm
-
-# Function to set servo angle
-def set_servo_angle(servo_pwm, angle):
-    # Constrain angle
-    if angle < 0:
-        angle = 0
-    elif angle > 180:
-        angle = 180
-    duty = SERVO_MIN_DUTY + (angle * (SERVO_MAX_DUTY - SERVO_MIN_DUTY) / 180.0)
-    servo_pwm.ChangeDutyCycle(duty)
-    time.sleep(0.3)  # Allow time for movement
-    servo_pwm.ChangeDutyCycle(0)
+    return right_pwm, left_pwm
 
 # Motor control functions
 def pivot_turn_right(right_pwm, left_pwm):
@@ -205,104 +180,60 @@ def setup_camera():
     picam2.start()
     return picam2
 
-# Improved line detection function that works better with contrast
+# Refined line detection function
 def detect_line(frame, color_priorities):
-    # Convert to HSV for color detection
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    
-    # Create a copy for drawing
-    display_frame = frame.copy()
     center_x = FRAME_WIDTH // 2
-    cv2.line(display_frame, (center_x, 0), (center_x, FRAME_HEIGHT), (0, 0, 255), 2)
+    cv2.line(frame, (center_x, 0), (center_x, FRAME_HEIGHT), (0, 0, 255), 2)
     
-    # Initial values
     best_contour = None
     best_color = None
-    max_area = MIN_CONTOUR_AREA
-    intersection = False
+    max_area = 0
     
-    # Check each color priority
+    # Check each color in priority order
     for color_name in color_priorities:
         color_ranges = all_color_ranges.get(color_name, [])
+        color_mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
         
         for lower, upper in color_ranges:
             lower = np.array(lower, dtype=np.uint8)
             upper = np.array(upper, dtype=np.uint8)
-            
-            # Create mask for this color
-            color_mask = cv2.inRange(hsv, lower, upper)
-            
-            # Apply morphology to clean up the mask
-            kernel = np.ones((5, 5), np.uint8)
-            color_mask = cv2.erode(color_mask, kernel, iterations=1)
-            color_mask = cv2.dilate(color_mask, kernel, iterations=1)
-            
-            # Find contours in this color mask
-            contours, _ = cv2.findContours(color_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            # Filter contours by size
-            valid_contours = [cnt for cnt in contours if cv2.contourArea(cnt) > MIN_CONTOUR_AREA]
-            
-            # Check for intersection
-            if len(valid_contours) >= 2:
-                intersection = True
-            
-            # Find the largest contour for this color
-            if valid_contours:
-                largest = max(valid_contours, key=cv2.contourArea)
-                area = cv2.contourArea(largest)
-                
-                # If this is the highest priority color so far with a large enough contour
-                if area > max_area:
-                    max_area = area
-                    best_contour = largest
-                    best_color = color_name
+            color_mask = cv2.bitwise_or(color_mask, cv2.inRange(hsv, lower, upper))
+        
+        # Find contours in the color mask
+        contours, _ = cv2.findContours(color_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if area > MIN_CONTOUR_AREA and area > max_area:
+                max_area = area
+                best_contour = contour
+                best_color = color_name
     
-    # Process the best contour if found
     if best_contour is not None:
         M = cv2.moments(best_contour)
-        
-        # Set contour color based on detected line color
-        if best_color == 'red':
-            contour_color = (0, 0, 255)  # BGR - Red
-        elif best_color == 'blue':
-            contour_color = (255, 0, 0)  # BGR - Blue
-        elif best_color == 'green':
-            contour_color = (0, 255, 0)  # BGR - Green
-        elif best_color == 'yellow':
-            contour_color = (0, 255, 255)  # BGR - Yellow
-        elif best_color == 'black':
-            contour_color = (128, 128, 128)  # BGR - Gray
-        else:
-            contour_color = (255, 255, 255)  # BGR - White
-        
-        # Draw the contour
-        cv2.drawContours(display_frame, [best_contour], -1, contour_color, 2)
-        
         if M["m00"] != 0:
             cx = int(M["m10"] / M["m00"])
             cy = int(M["m01"] / M["m00"])
-            cv2.circle(display_frame, (cx, cy), 5, (255, 0, 0), -1)
+            
+            # Draw the contour and center point
+            contour_color = (0, 255, 0) if best_color != 'black' else (128, 128, 128)
+            cv2.drawContours(frame, [best_contour], -1, contour_color, 2)
+            cv2.circle(frame, (cx, cy), 5, (255, 0, 0), -1)
+            cv2.line(frame, (center_x, cy), (cx, cy), (255, 0, 0), 2)
+            
             error = cx - center_x
-            cv2.line(display_frame, (center_x, cy), (cx, cy), (255, 0, 0), 2)
-            cv2.putText(display_frame, f"{best_color.capitalize()} Line, Error: {error}", (10, 30),
+            cv2.putText(frame, f"{best_color.capitalize()} Line, Error: {error}", (10, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, contour_color, 2)
             
-            # Return the processed frame instead of modifying original
-            return display_frame, error, True, intersection, best_color
+            return error, True, best_color
     
-    # If no line is found
-    cv2.putText(display_frame, "No Line Detected", (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
-    return display_frame, 0, False, intersection, None
+    return 0, False, None
 
 # Main function
 def main():
-    right_pwm, left_pwm, servo_pwm = setup_gpio()
+    right_pwm, left_pwm = setup_gpio()
     picam2 = setup_camera()
-    
-    # Center the servo initially
-    set_servo_angle(servo_pwm, 90)
     
     # Get user's color priority choices
     color_priorities = get_color_choices()
@@ -311,58 +242,45 @@ def main():
         GPIO.cleanup()
         return
     
-    # State variables (simplified to just NORMAL and RECOVERY)
-    state = "NORMAL"
-    current_color = None  # Track which color line we're following
-
     print("Line follower with color detection started. Press 'q' in the display window or Ctrl+C to stop.")
     
     try:
         while True:
             frame = picam2.capture_array()
-            # Get processed frame and detection results
-            display_frame, error, line_found, intersection, detected_color = detect_line(frame, color_priorities)
+            error, line_found, detected_color = detect_line(frame, color_priorities)
             
-            # If color has changed, announce it
-            if line_found and detected_color and detected_color != current_color:
-                current_color = detected_color
-                print(f"Now following {current_color} line")
-                
-            cv2.imshow("Line Follower", display_frame)
+            cv2.imshow("Line Follower", frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
             
-            if state == "NORMAL":
-                if line_found:
-                    if error > TURN_THRESHOLD:
-                        pivot_turn_right(right_pwm, left_pwm)
-                        print(f"Pivot Turning Right - {current_color} line")
-                    elif error < -TURN_THRESHOLD:
-                        pivot_turn_left(right_pwm, left_pwm)
-                        print(f"Pivot Turning Left - {current_color} line")
-                    else:
-                        move_forward(right_pwm, left_pwm)
-                        print(f"Moving Forward - {current_color} line")
+            if line_found:
+                if error > TURN_THRESHOLD:
+                    pivot_turn_right(right_pwm, left_pwm)
+                    print(f"Pivot Turning Right - {detected_color} line")
+                elif error < -TURN_THRESHOLD:
+                    pivot_turn_left(right_pwm, left_pwm)
+                    print(f"Pivot Turning Left - {detected_color} line")
                 else:
-                    # Line lost - enter recovery mode
-                    print("Line lost. Entering recovery mode (reversing)...")
-                    state = "RECOVERY"
-                    move_backward(right_pwm, left_pwm, REVERSE_SPEED)
-            
-            elif state == "RECOVERY":
-                # Keep reversing until a line is found
-                if line_found:
-                    print(f"{detected_color.capitalize()} line detected during recovery. Returning to normal mode.")
-                    stop_motors(right_pwm, left_pwm)
-                    state = "NORMAL"
-                    current_color = detected_color
-                # Continue reversing while no line is found (no time-based limit)
-            
+                    move_forward(right_pwm, left_pwm)
+                    print(f"Moving Forward - {detected_color} line")
+            else:
+                # Simplified backtracking - just reverse until line is found
+                print("Line lost. Reversing...")
+                move_backward(right_pwm, left_pwm, REVERSE_SPEED)
+                
+                # Keep checking for line while reversing
+                while True:
+                    frame = picam2.capture_array()
+                    _, line_found, _ = detect_line(frame, color_priorities)
+                    if line_found:
+                        stop_motors(right_pwm, left_pwm)
+                        break
+                    time.sleep(0.1)
+                
     except KeyboardInterrupt:
         print("\nProgram stopped by user")
     finally:
         stop_motors(right_pwm, left_pwm)
-        set_servo_angle(servo_pwm, 90)
         cv2.destroyAllWindows()
         GPIO.cleanup()
         print("Resources released")
