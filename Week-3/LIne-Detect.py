@@ -78,7 +78,15 @@ def detect_priority_color(frame, color_names, roi_type='bottom'):
     
     hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
     kernel = np.ones((5, 5), np.uint8)
-    MIN_AREA = 1000  # Increased to reduce noise
+    MIN_AREA = 800  # Reduced to catch smaller contours
+    
+    # Edge detection to enhance contours
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(blurred, 50, 150)
+    
+    # Dilate edges to make them more prominent
+    dilated_edges = cv2.dilate(edges, kernel, iterations=1)
     
     for color_name in color_names:
         color_ranges = all_color_ranges.get(color_name, [])
@@ -88,11 +96,18 @@ def detect_priority_color(frame, color_names, roi_type='bottom'):
             upper = np.array(upper, dtype=np.uint8)
             
             mask = cv2.inRange(hsv, lower, upper)
-            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-            mask = cv2.GaussianBlur(mask, (5, 5), 0)
             
-            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            # Combine color mask with edge detection for better results
+            enhanced_mask = cv2.bitwise_and(mask, dilated_edges)
+            if cv2.countNonZero(enhanced_mask) < 50:  # If not enough overlap, use original mask
+                enhanced_mask = mask
+            
+            # Apply morphological operations
+            enhanced_mask = cv2.morphologyEx(enhanced_mask, cv2.MORPH_OPEN, kernel)
+            enhanced_mask = cv2.morphologyEx(enhanced_mask, cv2.MORPH_CLOSE, kernel)
+            enhanced_mask = cv2.GaussianBlur(enhanced_mask, (5, 5), 0)
+            
+            contours, _ = cv2.findContours(enhanced_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
             if contours:
                 largest_contour = max(contours, key=cv2.contourArea)
@@ -100,10 +115,13 @@ def detect_priority_color(frame, color_names, roi_type='bottom'):
                     # Adjust contour coordinates to original frame
                     adjusted_contour = largest_contour.copy()
                     adjusted_contour[:, :, 1] += y_offset
+                    
+                    # Get angle for steering
                     rect = cv2.minAreaRect(largest_contour)
                     angle = rect[2]
                     if angle < -45:
                         angle += 90
+                    
                     return adjusted_contour, color_name, angle
     
     return None, None, 0
@@ -149,10 +167,10 @@ def main():
             top_roi_height = int(height * 0.7)
             bottom_roi_height = int(height * 0.3)
             
-            # Bottom ROI for detection (30% of height)
+            # Bottom ROI (30% of height)
             contour_bottom, color_name_bottom, line_angle_bottom = detect_priority_color(frame, color_priority, roi_type='bottom')
             
-            # Top ROI for angle visualization (70% of height)
+            # Top ROI (70% of height)
             contour_top, color_name_top, line_angle_top = detect_priority_color(frame, color_priority, roi_type='top')
             
             # Draw ROIs on the frame
@@ -166,8 +184,10 @@ def main():
             center_x = width // 2
             cv2.line(display_frame, (center_x, 0), (center_x, height), (0, 0, 255), 2)
             
+            # Draw horizontal yellow dividing line
+            cv2.line(display_frame, (0, top_roi_height), (width, top_roi_height), (0, 255, 255), 2)
+            
             movement = "No line detected"
-            outline_coords = "N/A"
             current_color = "None"
             error = 0
             servo_angle = 90
@@ -188,17 +208,12 @@ def main():
                 
                 # Get bounding rectangle
                 x, y, w, h = cv2.boundingRect(contour_bottom)
-                outline_coords = f"({x}, {y}, {w}, {h})"
                 current_color = color_name_bottom
                 
                 # Calculate error (distance from center)
                 line_center = x + w // 2
                 frame_center = width // 2
                 error = line_center - frame_center
-                
-                # Draw a blue dot at contour center point with line to center
-                cv2.circle(display_frame, (line_center, y + h//2), 5, (255, 0, 0), -1)
-                cv2.line(display_frame, (frame_center, y + h//2), (line_center, y + h//2), (255, 0, 0), 2)
                 
                 # Determine movement direction
                 CENTER_THRESHOLD = 20
@@ -209,56 +224,51 @@ def main():
                 else:
                     movement = "Move Forward"
                 
-                # Label bottom ROI contour
-                cv2.putText(display_frame, f"{color_name_bottom}", (x, y - 5),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, color_map[color_name_bottom], 2)
+                # Label bottom ROI contour with color name
+                cv2.putText(display_frame, f"{color_name_bottom}", 
+                          (x + w//2 - 30, y + h//2),
+                          cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2)
             
             # Process top ROI detection
             if contour_top is not None:
                 # Draw contour outline in green
                 cv2.drawContours(display_frame, [contour_top], -1, (0, 255, 0), 2)
                 
-                # Get the center of the contour
+                # Label top ROI contour
                 M = cv2.moments(contour_top)
                 if M["m00"] != 0:
                     cx = int(M["m10"] / M["m00"])
                     cy = int(M["m01"] / M["m00"])
-                    
-                    # Label top ROI contour
-                    cv2.putText(display_frame, f"{color_name_top}", (cx, cy - 10),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, color_map[color_name_top], 2)
+                    cv2.putText(display_frame, f"{color_name_top}", 
+                              (cx - 30, cy),
+                              cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2)
                 
                 # Calculate servo angle based on top ROI
                 servo_angle = map_line_angle_to_servo_angle(line_angle_top)
             
-            # Display error in red text at top-left corner
-            cv2.putText(display_frame, f"Error: {error}", (10, 30), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
+            # Display error in large red text at top-left corner
+            cv2.putText(display_frame, f"Error: {error}", (20, 60), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 3)
             
-            # Display all information
+            # Display information at the bottom in yellow text (like the example image)
             priority_text = f"Priority: {'>'.join(color_priority)}"
             detection_text = f"Detected: {current_color}"
             command_text = f"Command: {movement}"
-            error_text = f"Error: {error}"
             angle_text = f"Line Angle (Top): {line_angle_top:.2f}°"
             servo_text = f"Servo Angle: {servo_angle:.2f}°"
             
-            # Put additional info at the bottom of the frame
-            font_scale = 0.6
-            thickness = 2
-            y_start = height - 140
+            # Put info text in the bottom section with yellow color
+            y_start = height - 120
             line_height = 25
             
-            cv2.putText(display_frame, priority_text, (10, y_start), 
-                        cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 255, 255), thickness)
-            cv2.putText(display_frame, detection_text, (10, y_start + line_height), 
-                        cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 255, 255), thickness)
-            cv2.putText(display_frame, command_text, (10, y_start + 2*line_height), 
-                        cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 255, 255), thickness)
-            cv2.putText(display_frame, angle_text, (10, y_start + 3*line_height), 
-                        cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 255, 255), thickness)
-            cv2.putText(display_frame, servo_text, (10, y_start + 4*line_height), 
-                        cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 255, 255), thickness)
+            cv2.putText(display_frame, detection_text, (20, y_start), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+            cv2.putText(display_frame, command_text, (20, y_start + line_height), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+            cv2.putText(display_frame, angle_text, (20, y_start + 2*line_height), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+            cv2.putText(display_frame, servo_text, (20, y_start + 3*line_height), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
             
             # Show the frame
             cv2.imshow("Color Line Detection", display_frame)
