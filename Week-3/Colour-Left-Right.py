@@ -4,6 +4,8 @@ import numpy as np
 import cv2
 from picamera2 import Picamera2
 
+
+
 # Define GPIO pins
 IN1, IN2 = 22, 27         # Left motor control
 IN3, IN4 = 17, 4          # Right motor control
