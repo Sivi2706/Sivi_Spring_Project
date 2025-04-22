@@ -271,7 +271,7 @@ def main():
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
             
-            if line_found:
+            if line_found and detected_color in color_priorities:
                 if error > TURN_THRESHOLD:
                     pivot_turn_right(right_pwm, left_pwm)
                     print(f"Pivot Turning Right - {detected_color} line")
@@ -282,18 +282,17 @@ def main():
                     move_forward(right_pwm, left_pwm)
                     print(f"Moving Forward - {detected_color} line")
             else:
-                # Simplified backtracking - just reverse until line is found
-                print("Line lost. Reversing...")
+                print("No prioritized color line detected. Reversing...")
                 move_backward(right_pwm, left_pwm, REVERSE_SPEED)
                 
-                # Keep checking for line while reversing
                 while True:
                     frame = picam2.capture_array()
-                    _, line_found, _ = detect_line(frame, color_priorities)
-                    if line_found:
+                    _, line_found, detected_color = detect_line(frame, color_priorities)
+                    if line_found and detected_color in color_priorities:
                         stop_motors(right_pwm, left_pwm)
                         break
                     time.sleep(0.1)
+
                 
     except KeyboardInterrupt:
         print("\nProgram stopped by user")
