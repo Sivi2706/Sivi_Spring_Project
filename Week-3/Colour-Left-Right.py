@@ -28,9 +28,9 @@ right_pwm.start(0)
 left_pwm.start(0)
 
 # Speed settings (keeping original values)
-base_speed = 55
+base_speed = 45
 turn_speed = 70
-reverse_speed = 50
+reverse_speed = 35
 
 # Threshold for turning (pixels from center)
 turn_threshold = 100
