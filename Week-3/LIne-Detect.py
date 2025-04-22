@@ -1,16 +1,6 @@
-import RPi.GPIO as GPIO
-import time
 import numpy as np
 import cv2
 from picamera2 import Picamera2
-
-# Define GPIO pins for servo only
-ServoMotor = 18           # Servo motor PWM for the camera
-
-# Servo motor parameters
-SERVO_MIN_DUTY = 2.5       # Duty cycle for 0 degrees
-SERVO_MAX_DUTY = 12.5      # Duty cycle for 180 degrees
-SERVO_FREQ = 50            # 50Hz frequency for servo
 
 # Line following parameters
 MIN_CONTOUR_AREA = 800     # Minimum area for valid contours
@@ -19,10 +9,6 @@ FRAME_HEIGHT = 480         # Camera frame height
 
 # Threshold for turning
 TURN_THRESHOLD = 100        # Error threshold for pivoting
-
-# Updated scanning angles: center at 90, right at 45, left at 135.
-SCAN_ANGLES = [90, 45, 135]
-SCAN_TIME_PER_ANGLE = 0.5   # Seconds to wait per scan angle
 
 # Define all available color ranges (HSV format)
 all_color_ranges = {
@@ -43,41 +29,6 @@ all_color_ranges = {
         ([0, 0, 0], [179, 78, 50])
     ]
 }
-
-# GPIO Setup
-def setup_gpio():
-    GPIO.setmode(GPIO.BCM)
-    GPIO.setwarnings(False)
-    
-    # Set up PWM for servo
-    GPIO.setup(ServoMotor, GPIO.OUT)
-    servo_pwm = GPIO.PWM(ServoMotor, SERVO_FREQ)
-    servo_pwm.start(0)
-    
-    return servo_pwm
-
-# Function to set servo angle
-def set_servo_angle(servo_pwm, angle):
-    # Constrain angle
-    if angle < 0:
-        angle = 0
-    elif angle > 180:
-        angle = 180
-    duty = SERVO_MIN_DUTY + (angle * (SERVO_MAX_DUTY - SERVO_MIN_DUTY) / 180.0)
-    servo_pwm.ChangeDutyCycle(duty)
-    time.sleep(0.3)  # Allow time for movement
-    servo_pwm.ChangeDutyCycle(0)
-
-def map_line_angle_to_servo_angle(line_angle):
-    """
-    Map line angle (-45° to +45°) to servo angle (180° to 0°)
-    -45° (left) -> 180°, 0° (straight) -> 90°, +45° (right) -> 0°
-    """
-    # Normalize line angle to [-45, 45]
-    normalized_angle = max(-45, min(45, line_angle))
-    # Linear mapping: -45° -> 180°, 0° -> 90°, +45° -> 0°
-    servo_angle = 90 - (normalized_angle * 2)  # Scale: 45° -> 90°
-    return max(0, min(180, servo_angle))
 
 # Initialize camera
 def setup_camera():
@@ -289,7 +240,8 @@ def create_display_frame(frame, color_priority, contour_bottom, color_name_botto
                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
         
         # Calculate and display servo angle
-        servo_angle = map_line_angle_to_servo_angle(line_angle_top)
+        servo_angle = 90 - (line_angle_top * 2)  # Simplified mapping
+        servo_angle = max(0, min(180, servo_angle))
         servo_text = f"Servo: {servo_angle:.1f}°"
         cv2.putText(display_frame, servo_text, (width-200, 60), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
@@ -331,7 +283,6 @@ def create_display_frame(frame, color_priority, contour_bottom, color_name_botto
 
 # Main function
 def main():
-    servo_pwm = setup_gpio()
     picam2 = setup_camera()
     
     print("===== Color Line Detection =====")
@@ -340,12 +291,6 @@ def main():
     color_priority = get_color_choices()
     if not color_priority:
         return
-    
-    # Center the servo initially
-    set_servo_angle(servo_pwm, 90)
-    
-    # State variables
-    error = 0
     
     print(f"\nColor priority: {' > '.join(color_priority)}")
     print("Color detection started. Press 'q' to quit or 'c' to change colors")
@@ -383,20 +328,13 @@ def main():
                 if new_priority:
                     color_priority = new_priority
                     print(f"New priority: {' > '.join(color_priority)}")
-            
-            # Set servo angle based on line angle from top ROI
-            if contour_top is not None:
-                target_angle = map_line_angle_to_servo_angle(line_angle_top)
-                set_servo_angle(servo_pwm, target_angle)
     
     except KeyboardInterrupt:
         print("\nProgram stopped by user")
     
     finally:
-        set_servo_angle(servo_pwm, 90)
         cv2.destroyAllWindows()
         picam2.stop()
-        GPIO.cleanup()
         print("Resources released")
 
 if __name__ == "__main__":
