@@ -153,8 +153,8 @@ def detect_priority_color(frame, color_names, roi_type='bottom'):
     
     return None, None, 0, intersection
 
-def create_display_frame(frame, color_priority, contour_bottom, color_name_bottom, line_angle_bottom, 
-                         contour_top, color_name_top, line_angle_top, error):
+def create_display_frame(frame, color_priority, contour_bottom, color_name_bottom, line_angle_bottom,
+                         contour_top, color_name_top, line_angle_top, intersection_top):
     """
     Enhanced display frame with detailed top ROI visualization
     """
@@ -181,6 +181,7 @@ def create_display_frame(frame, color_priority, contour_bottom, color_name_botto
     movement = "No line detected"
     current_color = "None"
     servo_angle = 90
+    error = 0
     
     # Color to BGR mapping
     color_map = {
@@ -314,7 +315,7 @@ def main():
             # Create display frame with all visual elements
             display_frame, error, movement, servo_angle = create_display_frame(
                 frame, color_priority, contour_bottom, color_name_bottom, line_angle_bottom,
-                contour_top, color_name_top, line_angle_top, error)
+                contour_top, color_name_top, line_angle_top, intersection_top)
             
             # Show the frame
             cv2.imshow("Color Line Detection", display_frame)
@@ -327,7 +328,7 @@ def main():
                 new_priority = get_color_choices()
                 if new_priority:
                     color_priority = new_priority
-                    print(f"New priority: {' > '.join(color_priority)}")
+                    print(f"New priority: {' > '.join(new_priority)}")
     
     except KeyboardInterrupt:
         print("\nProgram stopped by user")
