@@ -2,9 +2,9 @@ import RPi.GPIO as GPIO
 import time
 import numpy as np
 import cv2
+import json
+import os
 from picamera2 import Picamera2
-
-
 
 # Define GPIO pins
 IN1, IN2 = 22, 27         # Left motor control
@@ -22,7 +22,7 @@ WHEEL_CIRCUMFERENCE = np.pi * WHEEL_DIAMETER  # cm
 # Line following parameters
 BASE_SPEED = 45           # Base motor speed (0-100)
 TURN_SPEED = 60           # Speed for pivot turns (0-100)
-MIN_CONTOUR_AREA = 800     # Reduced minimum area for valid contours
+MIN_CONTOUR_AREA = 800     # Minimum area for valid contours
 FRAME_WIDTH = 640          # Camera frame width
 FRAME_HEIGHT = 480         # Camera frame height
 
@@ -40,25 +40,46 @@ ROI_HEIGHT = 150           # Height of the ROI from the bottom of the frame
 right_counter = 0
 left_counter = 0
 
-# Define all available color ranges (HSV format)
-all_color_ranges = {
+# Calibration file
+CALIBRATION_FILE = "color_calibration.json"
+
+# Default color ranges (HSV format) in case calibration file is not found
+default_color_ranges = {
     'red': [
         ([0, 167, 154], [10, 247, 234]),    # Lower red range
         ([170, 167, 154], [180, 247, 234])  # Upper red range
     ],
     'blue': [
-        ([100, 167, 60], [130, 255, 95])    # Adjusted blue range
+        ([100, 167, 60], [130, 255, 95])    # Blue range
     ],
     'green': [
-        ([40, 180, 110], [75, 255, 190])    # Adjusted green range
+        ([40, 180, 110], [75, 255, 190])    # Green range
     ],
     'yellow': [
-        ([80, 100, 100], [100, 255, 255])  # Adjusted to detect cyan (instead of yellow)
+        ([80, 100, 100], [100, 255, 255])  # Yellow/Cyan range
     ],
     'black': [
-        ([0, 0, 0], [179, 100, 75])         # Adjusted black range with higher saturation and value thresholds
+        ([0, 0, 0], [179, 100, 75])         # Black range
     ]
 }
+
+# Function to load calibrated color ranges
+def load_color_calibration():
+    """Load calibrated color ranges from file or return defaults"""
+    if os.path.exists(CALIBRATION_FILE):
+        try:
+            with open(CALIBRATION_FILE, 'r') as f:
+                loaded_ranges = json.load(f)
+                print("Loaded calibrated color ranges from file.")
+                return loaded_ranges
+        except Exception as e:
+            print(f"Error loading calibration file: {e}")
+            print("Using default color ranges.")
+    else:
+        print("No calibration file found. Using default color ranges.")
+        print("Run the color_calibration.py script first to create calibrated ranges.")
+    
+    return default_color_ranges
 
 # Function to get user's color priority choice
 def get_color_choices():
@@ -67,6 +88,7 @@ def get_color_choices():
     print("b = blue")
     print("g = green")
     print("y = yellow")
+    print("c = cyan")
     print("k = black (lowest priority)")
     print("q = quit program")
     print("\nEnter colors in priority order (e.g., 'rb' for red then blue)")
@@ -76,6 +98,7 @@ def get_color_choices():
         'b': 'blue',
         'g': 'green',
         'y': 'yellow',
+        'c': 'cyan',
         'k': 'black'
     }
     
@@ -187,7 +210,9 @@ def setup_camera():
     config = picam2.create_preview_configuration(main={"size": (FRAME_WIDTH, FRAME_HEIGHT)})
     picam2.configure(config)
     picam2.start()
+    time.sleep(2)  # Allow camera to warm up
     return picam2
+
 
 # Function to allow user to calibrate black line detection parameters
 def calibrate_black_line(picam2):
