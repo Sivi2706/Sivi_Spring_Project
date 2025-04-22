@@ -1,0 +1,383 @@
+import cv2
+import numpy as np
+from picamera2 import Picamera2
+import RPi.GPIO as GPIO
+import os
+import time
+
+# Define the detect_color function
+def detect_color(frame, color_ranges, tuning_file=None):
+    """
+    Detect the dominant color in the frame using HSV and return the color, largest contour,
+    combined mask, and mean HSV value of the contour.
+    
+    Args:
+        frame: Input image frame from the camera.
+        color_ranges: Dictionary of color names and their HSV ranges.
+        tuning_file: Path to the camera tuning JSON file (optional).
+    
+    Returns:
+        detected_color: Name of the detected color or None.
+        largest_contour: Largest contour of the detected color or None.
+        combined_mask: Combined mask of all detected colors.
+        mean_hsv: Mean HSV value of the largest contour or None.
+    """
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    
+    max_area = 0
+    detected_color = None
+    largest_contour = None
+    combined_mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+    mean_hsv = None
+    
+    kernel = np.ones((5, 5), np.uint8)
+    
+    for color, (lower, upper) in color_ranges.items():
+        lower = np.array(lower, dtype=np.uint8)
+        upper = np.array(upper, dtype=np.uint8)
+        
+        mask = cv2.inRange(hsv, lower, upper)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        mask = cv2.GaussianBlur(mask, (5, 5), 0)
+        
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        combined_mask = cv2.bitwise_or(combined_mask, mask)
+        
+        if contours:
+            contour = max(contours, key=cv2.contourArea)
+            area = cv2.contourArea(contour)
+            if area > max_area:
+                max_area = area
+                detected_color = 'red' if color.startswith('red') else color
+                largest_contour = contour
+                
+                mask_temp = np.zeros(frame.shape[:2], dtype=np.uint8)
+                cv2.drawContours(mask_temp, [contour], -1, 255, -1)
+                mean_hsv = cv2.mean(hsv, mask=mask_temp)[:3]
+                print(f"Color: {detected_color}, Mean HSV: {mean_hsv}, Range: {lower} to {upper}")
+    
+    return detected_color, largest_contour, combined_mask, mean_hsv
+
+def capture_color_calibration(picam2, color_name):
+    """
+    Capture the current frame and calculate the HSV range for calibration
+    
+    Args:
+        picam2: PiCamera2 object
+        color_name: Name of the color being calibrated
+        
+    Returns:
+        lower_hsv: Lower bound of HSV range
+        upper_hsv: Upper bound of HSV range
+    """
+    print(f"Position the camera over {color_name} line and press 'y' when ready...")
+    
+    while True:
+        frame = picam2.capture_array()
+        
+        # Display a center rectangle for targeting the color
+        h, w = frame.shape[:2]
+        center_x, center_y = w // 2, h // 2
+        rect_size = 50
+        cv2.rectangle(frame, 
+                      (center_x - rect_size, center_y - rect_size), 
+                      (center_x + rect_size, center_y + rect_size), 
+                      (0, 255, 0), 2)
+        
+        # Show the current HSV value in the target area
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        target_hsv = hsv[center_y-rect_size:center_y+rect_size, center_x-rect_size:center_x+rect_size]
+        mean_hsv = cv2.mean(target_hsv)[:3]
+        
+        # Display the mean HSV value
+        cv2.putText(frame, f"Mean HSV: {tuple(int(v) for v in mean_hsv)}", 
+                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        cv2.putText(frame, f"Calibrating {color_name}...", 
+                    (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        cv2.putText(frame, "Press 'y' to capture, 'q' to skip", 
+                    (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        
+        if "DISPLAY" in os.environ:
+            cv2.imshow("Color Calibration", frame)
+        
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('y'):
+            # Create HSV range with tolerance
+            h, s, v = mean_hsv
+            
+            # Different tolerance for different colors
+            if color_name == 'red':
+                # Special case for red which wraps around the hue spectrum
+                if h < 10:  # Lower red range
+                    lower_hsv = [0, max(0, s - 50), max(0, v - 50)]
+                    upper_hsv = [min(179, h + 10), min(255, s + 50), min(255, v + 50)]
+                else:  # Upper red range
+                    lower_hsv = [max(0, h - 10), max(0, s - 50), max(0, v - 50)]
+                    upper_hsv = [min(179, 179), min(255, s + 50), min(255, v + 50)]
+            elif color_name == 'black':
+                # Black has low value but can have any hue/saturation
+                lower_hsv = [0, 0, 0]
+                upper_hsv = [179, 255, max(30, int(v) + 20)]
+            elif color_name == 'blue':
+                # Blue with tolerances to avoid black overlap
+                h_tolerance = 15
+                s_tolerance = 50
+                v_tolerance = 50
+                lower_hsv = [max(0, h - h_tolerance), max(0, s - s_tolerance), max(60, v - v_tolerance)]  # Enforce min Value=60
+                upper_hsv = [min(179, h + h_tolerance), min(255, s + s_tolerance), min(255, v + v_tolerance)]
+            else:
+                # Standard tolerance for other colors
+                h_tolerance = 15
+                s_tolerance = 50
+                v_tolerance = 50
+                lower_hsv = [max(0, h - h_tolerance), max(0, s - s_tolerance), max(0, v - v_tolerance)]
+                upper_hsv = [min(179, h + h_tolerance), min(255, s + s_tolerance), min(255, v + v_tolerance)]
+                
+            print(f"Calibrated {color_name}: HSV range = {lower_hsv} to {upper_hsv}")
+            return lower_hsv, upper_hsv
+        
+        elif key == ord('q'):
+            # Skip this color and use default values
+            print(f"Skipped calibration for {color_name}, using default values")
+            return None, None
+
+# Initialize camera
+tuning_file = "/usr/share/libcamera/ipa/vc4/ov5647.json"
+picam2 = Picamera2()
+if os.path.exists(tuning_file):
+    picam2.load_tuning_file(tuning_file)
+    print(f"Loaded tuning file: {tuning_file}")
+else:
+    print(f"Warning: Tuning file {tuning_file} not found. Using default tuning.")
+config = picam2.create_preview_configuration({"size": (640, 480)})
+picam2.configure(config)
+picam2.start()
+
+# Define motor driver GPIO pins
+motor_in1 = 22  # Left motor forward
+motor_in2 = 27  # Left motor backward
+motor_in3 = 17  # Right motor forward
+motor_in4 = 4   # Right motor backward
+ENA = 13  # Left motor speed control
+ENB = 12  # Right motor speed control
+
+# Setup GPIO
+GPIO.setmode(GPIO.BCM)
+GPIO.setup([motor_in1, motor_in2, motor_in3, motor_in4, ENA, ENB], GPIO.OUT)
+
+# Setup PWM for speed control (frequency: 1kHz)
+pwm1 = GPIO.PWM(ENA, 1000)
+pwm2 = GPIO.PWM(ENB, 1000)
+pwm1.start(0)
+pwm2.start(0)
+
+# Speed settings
+base_speed = 55
+max_speed = 100
+reverse_speed = 50
+
+# PID parameters
+Kp = 0.5
+Ki = 0
+Kd = 0.5
+
+# PID variables
+integral = 0
+previous_error = 0
+
+# Default HSV ranges (updated blue range)
+default_color_ranges = {
+    'red1': ([0, 100, 100], [10, 255, 255]),
+    'red2': ([160, 100, 100], [179, 255, 255]),
+    'blue': ([1, 157, 60], [31, 255, 115]),  # Updated blue range
+    'green': ([45, 100, 100], [75, 255, 255]),
+    'yellow': ([25, 100, 100], [35, 255, 255]),
+    'black': ([0, 0, 0], [179, 255, 30])
+}
+
+# Initialize color_ranges with defaults
+color_ranges = default_color_ranges.copy()
+
+def set_speed(left_speed, right_speed):
+    left_speed = max(0, min(100, left_speed))
+    right_speed = max(0, min(100, right_speed))
+    pwm1.ChangeDutyCycle(left_speed)
+    pwm2.ChangeDutyCycle(right_speed)
+
+def move_forward():
+    GPIO.output(motor_in1, GPIO.HIGH)
+    GPIO.output(motor_in2, GPIO.LOW)
+    GPIO.output(motor_in3, GPIO.HIGH)
+    GPIO.output(motor_in4, GPIO.LOW)
+    print("Moving Forward")
+    return "Moving Forward"
+
+def move_reverse():
+    GPIO.output(motor_in1, GPIO.LOW)
+    GPIO.output(motor_in2, GPIO.HIGH)
+    GPIO.output(motor_in3, GPIO.LOW)
+    GPIO.output(motor_in4, GPIO.HIGH)
+    set_speed(reverse_speed, reverse_speed)
+    print("Moving Reverse")
+    return "Moving Reverse"
+
+def stop():
+    set_speed(0, 0)
+    GPIO.output(motor_in1, GPIO.LOW)
+    GPIO.output(motor_in2, GPIO.LOW)
+    GPIO.output(motor_in3, GPIO.LOW)
+    GPIO.output(motor_in4, GPIO.LOW)
+    print("Stopping")
+    return "Stopped"
+
+def pid_control(error):
+    global integral, previous_error
+    proportional = error
+    integral += error
+    derivative = error - previous_error
+    control_signal = Kp * proportional + Ki * integral + Kd * derivative
+    previous_error = error
+    return control_signal
+
+def save_calibration(color_ranges, filename="color_calibration.txt"):
+    """Save calibration values to a file"""
+    with open(filename, 'w') as f:
+        for color, (lower, upper) in color_ranges.items():
+            f.write(f"{color}:{','.join(map(str, lower))}:{','.join(map(str, upper))}\n")
+    print(f"Calibration saved to {filename}")
+
+def load_calibration(filename="color_calibration.txt"):
+    """Load calibration values from a file"""
+    if not os.path.exists(filename):
+        print(f"Calibration file {filename} not found. Using default values.")
+        return default_color_ranges
+    
+    color_ranges = {}
+    try:
+        with open(filename, 'r') as f:
+            for line in f.readlines():
+                parts = line.strip().split(':')
+                if len(parts) == 3:
+                    color = parts[0]
+                    lower = list(map(int, parts[1].split(',')))
+                    upper = list(map(int, parts[2].split(',')))
+                    color_ranges[color] = (lower, upper)
+        print(f"Calibration loaded from {filename}")
+    except Exception as e:
+        print(f"Error loading calibration: {e}")
+        return default_color_ranges
+    
+    return color_ranges
+
+print("===== Color Line Follower with Calibration =====")
+print("Do you want to calibrate the colors? (y/n)")
+calibrate = input().lower() == 'y'
+
+if calibrate:
+    # Perform calibration for each color
+    colors_to_calibrate = {
+        'blue': 'blue',
+        'green': 'green',
+        'red': 'red1',  # We'll handle red1 and red2 together
+        'yellow': 'yellow',
+        'black': 'black'
+    }
+    
+    for display_name, color_key in colors_to_calibrate.items():
+        lower_hsv, upper_hsv = capture_color_calibration(picam2, display_name)
+        
+        if lower_hsv and upper_hsv:
+            color_ranges[color_key] = (lower_hsv, upper_hsv)
+            
+            # Special case for red which needs two ranges
+            if color_key == 'red1':
+                # Also update red2 for high-end of the hue spectrum
+                if lower_hsv[0] < 10:  # If we captured the lower red range
+                    # Set the upper red range accordingly
+                    red2_lower = [160, lower_hsv[1], lower_hsv[2]]
+                    red2_upper = [179, upper_hsv[1], upper_hsv[2]]
+                    color_ranges['red2'] = (red2_lower, red2_upper)
+    
+    # Save the calibration
+    save_calibration(color_ranges)
+else:
+    # Load previous calibration if available
+    color_ranges = load_calibration()
+
+# Wait for user to place the robot on the line
+print("Place the robot on the line and press Enter to start line following...")
+input()
+
+print("Press 'q' to exit the line following.")
+error = 0
+
+try:
+    while True:
+        frame = picam2.capture_array()
+
+        detected_color, largest_contour, mask, mean_hsv = detect_color(frame, color_ranges, tuning_file)
+
+        movement = "No line detected"
+        outline_coords = "N/A"
+        display_color = detected_color if detected_color else "None"
+
+        if largest_contour is not None:
+            x, y, w, h = cv2.boundingRect(largest_contour)
+            outline_coords = f"({x}, {y}, {w}, {h})"
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+            
+            line_center = x + w // 2
+            frame_center = frame.shape[1] // 2
+            error = line_center - frame_center
+            control_signal = pid_control(error)
+            
+            right_speed = base_speed - control_signal
+            left_speed = base_speed + control_signal
+            set_speed(left_speed, right_speed)
+            movement = move_forward()
+        else:
+            movement = move_reverse()
+
+        # Format color code as mean HSV value
+        color_code = f"Color Code: {tuple(int(v) for v in mean_hsv) if mean_hsv is not None else 'None'}"
+
+        # Display metadata
+        metadata = [
+            color_code,
+            f"Color: {display_color}",
+            f"Command: {movement}",
+            f"Outline: {outline_coords}",
+            f"Error: {error:.2f}"
+        ]
+        for i, text in enumerate(metadata):
+            cv2.putText(frame, text, (10, 30 + i * 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+
+        if "DISPLAY" in os.environ:
+            cv2.imshow("Color Line Detection", frame)
+
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+except KeyboardInterrupt:
+    print("Stopping robot...")
+
+except Exception as e:
+    print("Error:", e)
+
+finally:
+    try:
+        stop()
+        pwm1.stop()
+        pwm2.stop()
+    except Exception as e:
+        print(f"Error during PWM cleanup: {e}")
+    try:
+        cv2.destroyAllWindows()
+        picam2.stop()
+    except Exception as e:
+        print(f"Error during camera cleanup: {e}")
+    try:
+        GPIO.cleanup()
+    except Exception as e:
+        print(f"Error during GPIO cleanup: {e}")
