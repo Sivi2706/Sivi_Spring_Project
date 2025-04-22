@@ -1,9 +1,28 @@
-import cv2
-import numpy as np
-from picamera2 import Picamera2
-import os
+import RPi.GPIO as GPIO
 import time
-import uuid
+import numpy as np
+import cv2
+from picamera2 import Picamera2
+
+# Define GPIO pins for servo only
+ServoMotor = 18           # Servo motor PWM for the camera
+
+# Servo motor parameters
+SERVO_MIN_DUTY = 2.5       # Duty cycle for 0 degrees
+SERVO_MAX_DUTY = 12.5      # Duty cycle for 180 degrees
+SERVO_FREQ = 50            # 50Hz frequency for servo
+
+# Line following parameters
+MIN_CONTOUR_AREA = 800     # Minimum area for valid contours
+FRAME_WIDTH = 640          # Camera frame width
+FRAME_HEIGHT = 480         # Camera frame height
+
+# Threshold for turning
+TURN_THRESHOLD = 100        # Error threshold for pivoting
+
+# Updated scanning angles: center at 90, right at 45, left at 135.
+SCAN_ANGLES = [90, 45, 135]
+SCAN_TIME_PER_ANGLE = 0.5   # Seconds to wait per scan angle
 
 # Define all available color ranges (HSV format)
 all_color_ranges = {
@@ -25,8 +44,48 @@ all_color_ranges = {
     ]
 }
 
-# Define color priority order
-COLOR_PRIORITY = ['red', 'blue', 'green', 'yellow', 'black']
+# GPIO Setup
+def setup_gpio():
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setwarnings(False)
+    
+    # Set up PWM for servo
+    GPIO.setup(ServoMotor, GPIO.OUT)
+    servo_pwm = GPIO.PWM(ServoMotor, SERVO_FREQ)
+    servo_pwm.start(0)
+    
+    return servo_pwm
+
+# Function to set servo angle
+def set_servo_angle(servo_pwm, angle):
+    # Constrain angle
+    if angle < 0:
+        angle = 0
+    elif angle > 180:
+        angle = 180
+    duty = SERVO_MIN_DUTY + (angle * (SERVO_MAX_DUTY - SERVO_MIN_DUTY) / 180.0)
+    servo_pwm.ChangeDutyCycle(duty)
+    time.sleep(0.3)  # Allow time for movement
+    servo_pwm.ChangeDutyCycle(0)
+
+def map_line_angle_to_servo_angle(line_angle):
+    """
+    Map line angle (-45° to +45°) to servo angle (180° to 0°)
+    -45° (left) -> 180°, 0° (straight) -> 90°, +45° (right) -> 0°
+    """
+    # Normalize line angle to [-45, 45]
+    normalized_angle = max(-45, min(45, line_angle))
+    # Linear mapping: -45° -> 180°, 0° -> 90°, +45° -> 0°
+    servo_angle = 90 - (normalized_angle * 2)  # Scale: 45° -> 90°
+    return max(0, min(180, servo_angle))
+
+# Initialize camera
+def setup_camera():
+    picam2 = Picamera2()
+    config = picam2.create_preview_configuration(main={"size": (FRAME_WIDTH, FRAME_HEIGHT)})
+    picam2.configure(config)
+    picam2.start()
+    return picam2
 
 def get_color_choices():
     print("\nAvailable line colors to follow (priority order):")
@@ -67,9 +126,7 @@ def get_color_choices():
 
 def detect_priority_color(frame, color_names, roi_type='bottom'):
     """
-    Detect colors in priority order within specified ROI
-    Bottom ROI (30%) for line detection, Top ROI (30%) for angle
-    Returns contour, color, and angle
+    Enhanced color detection with better angle calculation
     """
     height, width = frame.shape[:2]
     if roi_type == 'bottom':
@@ -77,13 +134,22 @@ def detect_priority_color(frame, color_names, roi_type='bottom'):
         roi = frame[height - roi_height:height, :]
         y_offset = height - roi_height
     else:  # top
-        roi_height = int(height * 0.3)  # Top 30%
+        roi_height = int(height * 0.7)  # Top 70%
         roi = frame[0:roi_height, :]
         y_offset = 0
     
     hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
     kernel = np.ones((5, 5), np.uint8)
-    MIN_AREA = 1000  # Minimum contour area to reduce noise
+    
+    # Different minimum area thresholds for top and bottom
+    MIN_AREA = 800 if roi_type == 'bottom' else 500
+    
+    # Edge detection for better contour finding
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(blurred, 50, 150)
+    
+    intersection = False
     
     for color_name in color_names:
         color_ranges = all_color_ranges.get(color_name, [])
@@ -95,114 +161,220 @@ def detect_priority_color(frame, color_names, roi_type='bottom'):
             mask = cv2.inRange(hsv, lower, upper)
             mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
             mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-            mask = cv2.GaussianBlur(mask, (5, 5), 0)
             
-            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            # Combine color mask with edges
+            combined = cv2.bitwise_and(mask, edges)
+            if cv2.countNonZero(combined) < 50:  # Fallback to color mask if few edges
+                combined = mask
             
-            if contours:
-                largest_contour = max(contours, key=cv2.contourArea)
-                if cv2.contourArea(largest_contour) > MIN_AREA:
-                    largest_contour[:, :, 1] += y_offset
+            contours, _ = cv2.findContours(combined, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            # Check for intersections (multiple valid contours)
+            valid_contours = [cnt for cnt in contours if cv2.contourArea(cnt) > MIN_AREA]
+            if len(valid_contours) >= 2:
+                intersection = True
+            
+            if valid_contours:
+                largest_contour = max(valid_contours, key=cv2.contourArea)
+                
+                # Adjust contour coordinates to original frame
+                adjusted_contour = largest_contour.copy()
+                adjusted_contour[:, :, 1] += y_offset
+                
+                # Calculate line angle using fitLine for more accuracy
+                if len(largest_contour) >= 5:  # Need at least 5 points for fitLine
+                    [vx, vy, x, y] = cv2.fitLine(largest_contour, cv2.DIST_L2, 0, 0.01, 0.01)
+                    line_angle = np.degrees(np.arctan2(vy, vx))[0]
+                    
+                    # Adjust angle to be between -90 and 90 degrees
+                    if line_angle < -45:
+                        line_angle += 90
+                    elif line_angle > 45:
+                        line_angle -= 90
+                else:
+                    # Fallback to minAreaRect if not enough points
                     rect = cv2.minAreaRect(largest_contour)
-                    angle = rect[2]
-                    if angle < -45:
-                        angle += 90
-                    return largest_contour, color_name, angle
+                    line_angle = rect[2]
+                    if line_angle < -45:
+                        line_angle += 90
+                
+                return adjusted_contour, color_name, line_angle, intersection
     
-    return None, None, 0
+    return None, None, 0, intersection
 
+def create_display_frame(frame, color_priority, contour_bottom, color_name_bottom, line_angle_bottom, 
+                         contour_top, color_name_top, line_angle_top, error):
+    """
+    Enhanced display frame with detailed top ROI visualization
+    """
+    display_frame = frame.copy()
+    height, width = frame.shape[:2]
+    
+    # Draw ROIs
+    top_roi_height = int(height * 0.7)
+    bottom_roi_height = int(height * 0.3)
+    
+    # Bottom ROI (red rectangle)
+    cv2.rectangle(display_frame, (0, height - bottom_roi_height), (width, height), (0, 0, 255), 2)
+    
+    # Top ROI (blue rectangle)
+    cv2.rectangle(display_frame, (0, 0), (width, top_roi_height), (255, 0, 0), 2)
+    
+    # Draw center line (red vertical line)
+    center_x = width // 2
+    cv2.line(display_frame, (center_x, 0), (center_x, height), (0, 0, 255), 1)
+    
+    # Draw horizontal yellow dividing line
+    cv2.line(display_frame, (0, top_roi_height), (width, top_roi_height), (0, 255, 255), 2)
+    
+    movement = "No line detected"
+    current_color = "None"
+    servo_angle = 90
+    
+    # Color to BGR mapping
+    color_map = {
+        'red': (0, 0, 255),
+        'blue': (255, 0, 0),
+        'green': (0, 255, 0),
+        'yellow': (0, 255, 255),
+        'black': (0, 0, 0)
+    }
+    
+    # Process bottom ROI detection
+    if contour_bottom is not None:
+        # Draw contour outline in green
+        cv2.drawContours(display_frame, [contour_bottom], -1, (0, 255, 0), 2)
+        
+        # Get bounding rectangle
+        x, y, w, h = cv2.boundingRect(contour_bottom)
+        current_color = color_name_bottom
+        
+        # Calculate error (distance from center)
+        line_center = x + w // 2
+        frame_center = width // 2
+        error = line_center - frame_center
+        
+        # Draw a blue dot at contour center point with line to center
+        cv2.circle(display_frame, (line_center, y + h//2), 5, (255, 0, 0), -1)
+        cv2.line(display_frame, (frame_center, y + h//2), (line_center, y + h//2), (255, 0, 0), 2)
+        
+        # Determine movement direction
+        CENTER_THRESHOLD = 20
+        if error < -CENTER_THRESHOLD:
+            movement = "Turn Left"
+        elif error > CENTER_THRESHOLD:
+            movement = "Turn Right"
+        else:
+            movement = "Move Forward"
+        
+        # Label bottom ROI contour
+        cv2.putText(display_frame, f"{color_name_bottom}", (x, y - 5),
+                  cv2.FONT_HERSHEY_SIMPLEX, 0.8, color_map[color_name_bottom], 2)
+    
+    # Process top ROI detection
+    if contour_top is not None:
+        # Draw contour outline in green
+        cv2.drawContours(display_frame, [contour_top], -1, (0, 255, 0), 2)
+        
+        # Draw fitted line for top ROI (magenta)
+        rows, cols = frame.shape[:2]
+        [vx, vy, x, y] = cv2.fitLine(contour_top, cv2.DIST_L2, 0, 0.01, 0.01)
+        lefty = int((-x*vy/vx) + y)
+        righty = int(((cols-x)*vy/vx)+y)
+        cv2.line(display_frame, (cols-1, righty), (0, lefty), (255, 0, 255), 2)
+        
+        # Display angle information
+        angle_text = f"Top Angle: {line_angle_top:.1f}°"
+        cv2.putText(display_frame, angle_text, (width-200, 30), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+        
+        # Calculate and display servo angle
+        servo_angle = map_line_angle_to_servo_angle(line_angle_top)
+        servo_text = f"Servo: {servo_angle:.1f}°"
+        cv2.putText(display_frame, servo_text, (width-200, 60), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+        
+        # Get the center of the contour
+        M = cv2.moments(contour_top)
+        if M["m00"] != 0:
+            cx = int(M["m10"] / M["m00"])
+            cy = int(M["m01"] / M["m00"])
+            
+            # Label top ROI contour
+            cv2.putText(display_frame, f"{color_name_top}", (cx, cy - 10),
+                      cv2.FONT_HERSHEY_SIMPLEX, 0.8, color_map[color_name_top], 2)
+    
+    # Display error in large red text at top-left corner
+    cv2.putText(display_frame, f"Error: {error}", (20, 60), 
+               cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 3)
+    
+    # Display information at the bottom in yellow text
+    detection_text = f"Detected: {current_color}"
+    command_text = f"Command: {movement}"
+    angle_text = f"Line Angle (Top): {line_angle_top:.2f}°"
+    servo_text = f"Servo Angle: {servo_angle:.2f}°"
+    
+    # Put info text in the bottom section with yellow color
+    y_start = height - 120
+    line_height = 25
+    
+    cv2.putText(display_frame, detection_text, (20, y_start), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+    cv2.putText(display_frame, command_text, (20, y_start + line_height), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+    cv2.putText(display_frame, angle_text, (20, y_start + 2*line_height), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+    cv2.putText(display_frame, servo_text, (20, y_start + 3*line_height), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+    
+    return display_frame, error, movement, servo_angle
+
+# Main function
 def main():
-    # Initialize camera
-    picam2 = Picamera2()
-    config = picam2.create_preview_configuration({"size": (640, 480)})  # Increased resolution
-    picam2.configure(config)
-    picam2.start()
+    servo_pwm = setup_gpio()
+    picam2 = setup_camera()
     
-    # Set larger display window size
-    WINDOW_NAME = "Color Line Display"
-    cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(WINDOW_NAME, 1280, 960)  # Increased window size
+    print("===== Color Line Detection =====")
     
-    print("===== Color Line Display =====")
-    
+    # Get color priorities from user
     color_priority = get_color_choices()
     if not color_priority:
         return
     
-    print(f"\nColor priority: {' > '.join(color_priority)}")
-    print("Press 'q' to quit or 'c' to change colors")
+    # Center the servo initially
+    set_servo_angle(servo_pwm, 90)
     
+    # State variables
+    error = 0
+    
+    print(f"\nColor priority: {' > '.join(color_priority)}")
+    print("Color detection started. Press 'q' to quit or 'c' to change colors")
+
     try:
+        # Create a larger display window
+        cv2.namedWindow("Color Line Detection", cv2.WINDOW_NORMAL)
+        cv2.resizeWindow("Color Line Detection", 800, 600)
+        
         while True:
             frame = picam2.capture_array()
             
-            # Bottom ROI for line detection
-            contour_bottom, color_name_bottom, line_angle_bottom = detect_priority_color(frame, color_priority, roi_type='bottom')
+            # Bottom ROI for motor control (30% of height)
+            contour_bottom, color_name_bottom, line_angle_bottom, intersection_bottom = detect_priority_color(
+                frame, color_priority, roi_type='bottom')
             
-            # Top ROI for angle detection
-            contour_top, color_name_top, line_angle_top = detect_priority_color(frame, color_priority, roi_type='top')
+            # Top ROI for angle visualization (70% of height)
+            contour_top, color_name_top, line_angle_top, intersection_top = detect_priority_color(
+                frame, color_priority, roi_type='top')
             
-            # Initialize display variables
-            current_color = "None"
-            outline_coords = "N/A"
-            error = 0
+            # Create display frame with all visual elements
+            display_frame, error, movement, servo_angle = create_display_frame(
+                frame, color_priority, contour_bottom, color_name_bottom, line_angle_bottom,
+                contour_top, color_name_top, line_angle_top, error)
             
-            # Draw ROIs
-            height, width = frame.shape[:2]
-            bottom_roi_height = int(height * 0.3)
-            top_roi_height = int(height * 0.3)
+            # Show the frame
+            cv2.imshow("Color Line Detection", display_frame)
             
-            # Draw bottom ROI rectangle
-            cv2.rectangle(frame, (0, height - bottom_roi_height), (width, height), (255, 255, 255), 1)
-            cv2.putText(frame, "Bottom ROI", (10, height - bottom_roi_height - 10), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-            
-            # Draw top ROI rectangle
-            cv2.rectangle(frame, (0, 0), (width, top_roi_height), (255, 255, 255), 1)
-            cv2.putText(frame, "Top ROI", (10, 30), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-            
-            if contour_bottom is not None:
-                current_color = color_name_bottom
-                x, y, w, h = cv2.boundingRect(contour_bottom)
-                outline_coords = f"({x}, {y}, {w}, {h})"
-                
-                color_map = {
-                    'red': (0, 0, 255),
-                    'blue': (255, 0, 0),
-                    'green': (0, 255, 0),
-                    'yellow': (0, 255, 255),
-                    'black': (0, 0, 0)
-                }
-                cv2.rectangle(frame, (x, y), (x+w, y+h), color_map[color_name_bottom], 2)
-                
-                # Calculate error for display
-                line_center = x + w // 2
-                frame_center = width // 2
-                error = line_center - frame_center
-            
-            # Prepare metadata text
-            priority_text = f"Priority: {'>'.join(color_priority)}"
-            detection_text = f"Detected: {current_color}"
-            coords_text = f"Coords: {outline_coords}"
-            error_text = f"Error: {error:.2f}"
-            angle_text = f"Top ROI Angle: {line_angle_top:.2f}Â°"
-            
-            # Display metadata
-            y_offset = 60
-            cv2.putText(frame, priority_text, (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-            y_offset += 30
-            cv2.putText(frame, detection_text, (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-            y_offset += 30
-            cv2.putText(frame, coords_text, (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-            y_offset += 30
-            cv2.putText(frame, error_text, (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-            y_offset += 30
-            cv2.putText(frame, angle_text, (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-            
-            if "DISPLAY" in os.environ:
-                cv2.imshow(WINDOW_NAME, frame)
-            
+            # Check for key presses
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
                 break
@@ -211,16 +383,21 @@ def main():
                 if new_priority:
                     color_priority = new_priority
                     print(f"New priority: {' > '.join(color_priority)}")
+            
+            # Set servo angle based on line angle from top ROI
+            if contour_top is not None:
+                target_angle = map_line_angle_to_servo_angle(line_angle_top)
+                set_servo_angle(servo_pwm, target_angle)
     
     except KeyboardInterrupt:
-        print("Stopping display...")
-    
-    except Exception as e:
-        print(f"Error: {e}")
+        print("\nProgram stopped by user")
     
     finally:
+        set_servo_angle(servo_pwm, 90)
         cv2.destroyAllWindows()
         picam2.stop()
+        GPIO.cleanup()
+        print("Resources released")
 
 if __name__ == "__main__":
     main()
