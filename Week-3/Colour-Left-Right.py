@@ -48,7 +48,7 @@ left_counter = 0
 all_color_ranges = {
     'red': [
         ([0, 167, 154], [10, 247, 234]),    # Lower red range
-        ([170, 167, 154], [180, 247, 234])  # Upper red range (corrected)
+        ([170, 167, 154], [180, 247, 234])  # Upper red range
     ],
     'blue': [
         ([100, 167, 60], [130, 255, 95])    # Adjusted blue range
@@ -242,77 +242,90 @@ def setup_camera():
     picam2.start()
     return picam2
 
-# New function to detect lines based on priority colors
-def detect_priority_color(frame, color_names):
-    """
-    Detect colors in priority order, returning the first qualified detection
-    """
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    kernel = np.ones((5, 5), np.uint8)
+# Function to identify color of a line
+def identify_color(hsv, contour, color_priorities):
+    # Create a mask just containing the contour
+    mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
+    cv2.drawContours(mask, [contour], 0, 255, -1)
     
-    center_x = FRAME_WIDTH // 2
-    cv2.line(frame, (center_x, 0), (center_x, FRAME_HEIGHT), (0, 0, 255), 2)
-    
-    for color_name in color_names:
+    # Check each color in order of priority
+    for color_name in color_priorities:
         color_ranges = all_color_ranges.get(color_name, [])
-        
-        # Create a combined mask for all ranges of this color
-        combined_mask = None
         
         for lower, upper in color_ranges:
             lower = np.array(lower, dtype=np.uint8)
             upper = np.array(upper, dtype=np.uint8)
             
-            mask = cv2.inRange(hsv, lower, upper)
+            # Create a mask for this color range
+            color_mask = cv2.inRange(hsv, lower, upper)
             
-            if combined_mask is None:
-                combined_mask = mask
-            else:
-                combined_mask = cv2.bitwise_or(combined_mask, mask)
-        
-        if combined_mask is not None:
-            # Process the mask
-            combined_mask = cv2.erode(combined_mask, kernel, iterations=1)
-            combined_mask = cv2.dilate(combined_mask, kernel, iterations=1)
+            # Find the intersection between the contour mask and color mask
+            intersection = cv2.bitwise_and(mask, color_mask)
             
-            contours, _ = cv2.findContours(combined_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            # Filter out contours that are too small
-            valid_contours = [cnt for cnt in contours if cv2.contourArea(cnt) > MIN_CONTOUR_AREA]
-            
-            if valid_contours:
-                largest_contour = max(valid_contours, key=cv2.contourArea)
-                M = cv2.moments(largest_contour)
-                
-                # Draw contour with color-specific highlighting
-                if color_name == 'red':
-                    contour_color = (0, 0, 255)  # BGR - Red
-                elif color_name == 'blue':
-                    contour_color = (255, 0, 0)  # BGR - Blue
-                elif color_name == 'green':
-                    contour_color = (0, 255, 0)  # BGR - Green
-                elif color_name == 'yellow':
-                    contour_color = (0, 255, 255)  # BGR - Yellow
-                else:
-                    contour_color = (255, 255, 255)  # BGR - White for black line
-                
-                cv2.drawContours(frame, [largest_contour], -1, contour_color, 2)
-                
-                if M["m00"] != 0:
-                    cx = int(M["m10"] / M["m00"])
-                    cy = int(M["m01"] / M["m00"])
-                    cv2.circle(frame, (cx, cy), 5, (255, 0, 0), -1)
-                    error = cx - center_x
-                    cv2.line(frame, (center_x, cy), (cx, cy), (255, 0, 0), 2)
-                    cv2.putText(frame, f"{color_name.capitalize()} Line, Error: {error}", (10, 30),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, contour_color, 2)
-                    
-                    # Check if multiple contours are detected (potential intersection)
-                    intersection = len(valid_contours) >= 2
-                    
-                    return error, True, intersection, color_name
+            # If a significant portion of the contour matches this color
+            if cv2.countNonZero(intersection) > 0.5 * cv2.countNonZero(mask):
+                return color_name
     
-    return 0, False, False, None
+    return "unknown"  # Default if no color is matched
+
+# Modified line detection function that also identifies color
+def detect_line(frame, color_priorities):
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    lower_black = np.array([0, 0, 0])
+    upper_black = np.array([180, 255, 120])  # Include all dark colors initially
+    mask_black = cv2.inRange(hsv, lower_black, upper_black)
+    kernel = np.ones((5, 5), np.uint8)
+    mask_black = cv2.erode(mask_black, kernel, iterations=1)
+    mask_black = cv2.dilate(mask_black, kernel, iterations=1)
+    contours, _ = cv2.findContours(mask_black, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    center_x = FRAME_WIDTH // 2
+    cv2.line(frame, (center_x, 0), (center_x, FRAME_HEIGHT), (0, 0, 255), 2)
+    
+    intersection = False
+    detected_color = None
+    
+    if contours:
+        # Filter out contours that are too small
+        valid_contours = [cnt for cnt in contours if cv2.contourArea(cnt) > MIN_CONTOUR_AREA]
+        # If two or more valid contours are detected, consider it an intersection.
+        if len(valid_contours) >= 2:
+            intersection = True
+        if valid_contours:
+            largest_contour = max(valid_contours, key=cv2.contourArea)
+            area = cv2.contourArea(largest_contour)
+            M = cv2.moments(largest_contour)
+            
+            # Identify the color of the detected line
+            detected_color = identify_color(hsv, largest_contour, color_priorities)
+            
+            # Set contour color based on detected line color
+            if detected_color == 'red':
+                contour_color = (0, 0, 255)  # BGR - Red
+            elif detected_color == 'blue':
+                contour_color = (255, 0, 0)  # BGR - Blue
+            elif detected_color == 'green':
+                contour_color = (0, 255, 0)  # BGR - Green
+            elif detected_color == 'yellow':
+                contour_color = (0, 255, 255)  # BGR - Yellow
+            elif detected_color == 'black':
+                contour_color = (128, 128, 128)  # BGR - Gray
+            else:
+                contour_color = (255, 255, 255)  # BGR - White
+            
+            cv2.drawContours(frame, [largest_contour], -1, contour_color, 2)
+            
+            if M["m00"] != 0:
+                cx = int(M["m10"] / M["m00"])
+                cy = int(M["m01"] / M["m00"])
+                cv2.circle(frame, (cx, cy), 5, (255, 0, 0), -1)
+                error = cx - center_x
+                cv2.line(frame, (center_x, cy), (cx, cy), (255, 0, 0), 2)
+                cv2.putText(frame, f"{detected_color.capitalize()} Line, Error: {error}", (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, contour_color, 2)
+                return error, True, intersection, detected_color
+    
+    return 0, False, intersection, None
 
 # Main function
 def main():
@@ -337,34 +350,39 @@ def main():
     detected_scan_angle = None
     current_color = None  # Track which color line we're following
 
-    print("Multi-color line follower started. Press 'q' in the display window or Ctrl+C to stop.")
+    print("Line follower with color detection started. Press 'q' in the display window or Ctrl+C to stop.")
     
     try:
         while True:
             frame = picam2.capture_array()
-            # Detect line based on color priorities
-            error, line_found, intersection, detected_color = detect_priority_color(frame, color_priorities)
+            # Adjusted to unpack four return values including color
+            error, line_found, intersection, detected_color = detect_line(frame, color_priorities)
             
             # If color has changed, announce it
             if line_found and detected_color and detected_color != current_color:
                 current_color = detected_color
                 print(f"Now following {current_color} line")
-            
-            cv2.imshow("Multi-Color Line Follower", frame)
+                
+            cv2.imshow("Line Follower", frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
+            
+            # Skip controlling the robot if detected color is not in our priority list
+            if line_found and detected_color not in color_priorities:
+                print(f"Ignoring {detected_color} line - not in priority list")
+                line_found = False
             
             if state == "NORMAL":
                 if line_found:
                     if error > TURN_THRESHOLD:
                         pivot_turn_right(right_pwm, left_pwm)
-                        print(f"Pivot Turning Right - Following {current_color} line")
+                        print(f"Pivot Turning Right - {current_color} line")
                     elif error < -TURN_THRESHOLD:
                         pivot_turn_left(right_pwm, left_pwm)
-                        print(f"Pivot Turning Left - Following {current_color} line")
+                        print(f"Pivot Turning Left - {current_color} line")
                     else:
                         move_forward(right_pwm, left_pwm)
-                        print(f"Moving Forward - Following {current_color} line")
+                        print(f"Moving Forward - {current_color} line")
                 else:
                     print("Line lost. Reversing...")
                     state = "REVERSING"
@@ -384,7 +402,12 @@ def main():
             elif state == "SCANNING":
                 if time.time() - scan_start_time >= SCAN_TIME_PER_ANGLE:
                     frame = picam2.capture_array()
-                    error, line_found, intersection, detected_color = detect_priority_color(frame, color_priorities)
+                    error, line_found, intersection, detected_color = detect_line(frame, color_priorities)
+                    
+                    # Only consider lines that match our priority list
+                    if line_found and detected_color not in color_priorities:
+                        line_found = False
+                    
                     # Check if an intersection is detected
                     if intersection:
                         print("Intersection detected. Centering servo to 90° and adjusting.")
