@@ -30,6 +30,10 @@ TURN_THRESHOLD = 100       # Error threshold for pivoting
 # Recovery parameters
 REVERSE_SPEED = 40         # Speed when reversing
 
+# ROI parameters
+USE_ROI = True             # Enable ROI for more focused line detection
+ROI_HEIGHT = 150           # Height of the ROI from the bottom of the frame
+
 # Variables to store encoder counts
 right_counter = 0
 left_counter = 0
@@ -49,7 +53,6 @@ all_color_ranges = {
     'yellow': [
         ([80, 100, 100], [100, 255, 255])  # Adjusted to detect cyan (instead of yellow)
     ],
-
     'black': [
         ([0, 0, 0], [179, 78, 50])          # Original black range
     ]
@@ -89,6 +92,9 @@ def get_color_choices():
                 
         if unique_choices:
             selected_colors = [color_map[c] for c in unique_choices]
+            # Make sure black is always in the list (as lowest priority if not specified)
+            if 'black' not in selected_colors:
+                selected_colors.append('black')
             print(f"Priority order: {' > '.join(selected_colors)}")
             return selected_colors
         else:
@@ -183,9 +189,21 @@ def setup_camera():
 
 # Refined line detection function
 def detect_line(frame, color_priorities):
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    # Apply ROI if enabled
+    if USE_ROI:
+        roi_y_start = FRAME_HEIGHT - ROI_HEIGHT
+        roi = frame[roi_y_start:FRAME_HEIGHT, 0:FRAME_WIDTH]
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    else:
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    
     center_x = FRAME_WIDTH // 2
     cv2.line(frame, (center_x, 0), (center_x, FRAME_HEIGHT), (0, 0, 255), 2)
+    
+    # Draw ROI border if enabled
+    if USE_ROI:
+        roi_y_start = FRAME_HEIGHT - ROI_HEIGHT
+        cv2.rectangle(frame, (0, roi_y_start), (FRAME_WIDTH, FRAME_HEIGHT), (255, 255, 0), 2)
 
     best_contour = None
     best_color = None
@@ -195,6 +213,7 @@ def detect_line(frame, color_priorities):
     # Dictionary to store all valid contours for each color
     valid_contours = {}
 
+    # Process each color according to priority
     for color_name in color_priorities:
         color_ranges = all_color_ranges.get(color_name, [])
         color_mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
@@ -204,7 +223,13 @@ def detect_line(frame, color_priorities):
             upper = np.array(upper, dtype=np.uint8)
             color_mask = cv2.bitwise_or(color_mask, cv2.inRange(hsv, lower, upper))
 
+        # Apply morphological operations to reduce noise
+        kernel = np.ones((5, 5), np.uint8)
+        color_mask = cv2.morphologyEx(color_mask, cv2.MORPH_CLOSE, kernel)
+        
+        # Find contours
         contours, _ = cv2.findContours(color_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
         # Filter by area
         valid = [cnt for cnt in contours if cv2.contourArea(cnt) > MIN_CONTOUR_AREA]
 
@@ -214,29 +239,52 @@ def detect_line(frame, color_priorities):
     # Prioritize: Find the best contour of the highest-priority available color
     for color_name in color_priorities:
         if color_name in valid_contours:
-            for contour in valid_contours[color_name]:
-                area = cv2.contourArea(contour)
-                if area > max_area:
-                    max_area = area
-                    best_contour = contour
-                    best_color = color_name
+            largest_contour = max(valid_contours[color_name], key=cv2.contourArea)
+            area = cv2.contourArea(largest_contour)
+            if area > max_area:
+                max_area = area
+                best_contour = largest_contour
+                best_color = color_name
             break  # Found the highest-priority color available
 
     if best_contour is not None:
         M = cv2.moments(best_contour)
         if M["m00"] != 0:
-            best_cx = int(M["m10"] / M["m00"])
-            best_cy = int(M["m01"] / M["m00"])
+            # Calculate center of contour
+            cx = int(M["m10"] / M["m00"])
+            cy = int(M["m01"] / M["m00"])
+            
+            # Adjust coordinates if using ROI
+            if USE_ROI:
+                best_cx = cx
+                best_cy = cy + (FRAME_HEIGHT - ROI_HEIGHT)
+            else:
+                best_cx = cx
+                best_cy = cy
 
-            hsv_value = hsv[best_cy, best_cx]
-            h, s, v = hsv_value
-
+            # Draw contour and center point
             contour_color = (0, 255, 0) if best_color != 'black' else (128, 128, 128)
-            cv2.drawContours(frame, [best_contour], -1, contour_color, 2)
-            cv2.circle(frame, (best_cx, best_cy), 5, (255, 0, 0), -1)
+            
+            if USE_ROI:
+                # Draw on ROI portion
+                cv2.drawContours(frame[FRAME_HEIGHT-ROI_HEIGHT:FRAME_HEIGHT, 0:FRAME_WIDTH], 
+                                [best_contour], -1, contour_color, 2)
+                cv2.circle(frame, (best_cx, best_cy), 5, (255, 0, 0), -1)
+            else:
+                cv2.drawContours(frame, [best_contour], -1, contour_color, 2)
+                cv2.circle(frame, (best_cx, best_cy), 5, (255, 0, 0), -1)
+                
             cv2.line(frame, (center_x, best_cy), (best_cx, best_cy), (255, 0, 0), 2)
 
             error = best_cx - center_x
+
+            # Display information
+            if USE_ROI:
+                hsv_value = hsv[cy, cx]  # Use ROI coordinates
+            else:
+                hsv_value = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)[best_cy, best_cx]
+                
+            h, s, v = hsv_value
 
             cv2.putText(frame, f"{best_color.capitalize()} Line, Error: {error}", (10, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, contour_color, 2)
@@ -246,7 +294,6 @@ def detect_line(frame, color_priorities):
             return error, True, best_color
 
     return 0, False, None
-
 
 # Main function
 def main():
@@ -262,6 +309,9 @@ def main():
     
     print("Line follower with color detection started. Press 'q' in the display window or Ctrl+C to stop.")
     
+    # Flag to track if we're in recovery mode
+    recovery_mode = False
+    
     try:
         while True:
             frame = picam2.capture_array()
@@ -271,7 +321,9 @@ def main():
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
             
-            if line_found and detected_color in color_priorities:
+            if line_found:
+                # Line is detected (can be any color including black)
+                recovery_mode = False
                 if error > TURN_THRESHOLD:
                     pivot_turn_right(right_pwm, left_pwm)
                     print(f"Pivot Turning Right - {detected_color} line")
@@ -282,17 +334,14 @@ def main():
                     move_forward(right_pwm, left_pwm)
                     print(f"Moving Forward - {detected_color} line")
             else:
-                print("No prioritized color line detected. Reversing...")
-                move_backward(right_pwm, left_pwm, REVERSE_SPEED)
+                # No line detected - only now do we go into recovery mode
+                if not recovery_mode:
+                    print("No line detected. Starting recovery...")
+                    recovery_mode = True
                 
-                while True:
-                    frame = picam2.capture_array()
-                    _, line_found, detected_color = detect_line(frame, color_priorities)
-                    if line_found and detected_color in color_priorities:
-                        stop_motors(right_pwm, left_pwm)
-                        break
-                    time.sleep(0.1)
-
+                move_backward(right_pwm, left_pwm, REVERSE_SPEED)
+                print("Reversing to find line...")
+                time.sleep(0.1)  # Small delay to avoid flooding the console
                 
     except KeyboardInterrupt:
         print("\nProgram stopped by user")
