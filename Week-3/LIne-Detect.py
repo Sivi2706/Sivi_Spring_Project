@@ -1,9 +1,7 @@
 import cv2
 import numpy as np
 from picamera2 import Picamera2
-import os
 import time
-import uuid
 
 # Define all available color ranges (HSV format)
 all_color_ranges = {
@@ -24,9 +22,6 @@ all_color_ranges = {
         ([0, 0, 0], [179, 78, 50])
     ]
 }
-
-# Define color priority order
-COLOR_PRIORITY = ['red', 'blue', 'green', 'yellow', 'black']
 
 def get_color_choices():
     print("\nAvailable line colors to follow (priority order):")
@@ -68,7 +63,7 @@ def get_color_choices():
 def detect_priority_color(frame, color_names, roi_type='bottom'):
     """
     Detect colors in priority order within specified ROI
-    Bottom ROI (30%) for line detection, Top ROI (30%) for angle
+    Bottom ROI (30%) for motor control, Top ROI (30%) for servo
     Returns contour, color, and angle
     """
     height, width = frame.shape[:2]
@@ -83,7 +78,7 @@ def detect_priority_color(frame, color_names, roi_type='bottom'):
     
     hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
     kernel = np.ones((5, 5), np.uint8)
-    MIN_AREA = 1000  # Minimum contour area to reduce noise
+    MIN_AREA = 1000  # Increased to reduce noise
     
     for color_name in color_names:
         color_ranges = all_color_ranges.get(color_name, [])
@@ -111,19 +106,25 @@ def detect_priority_color(frame, color_names, roi_type='bottom'):
     
     return None, None, 0
 
+def map_line_angle_to_servo_angle(line_angle):
+    """
+    Map line angle (-45° to +45°) to servo angle (180° to 0°)
+    -45° (left) -> 180°, 0° (straight) -> 90°, +45° (right) -> 0°
+    """
+    # Normalize line angle to [-45, 45]
+    normalized_angle = max(-45, min(45, line_angle))
+    # Linear mapping: -45° -> 180°, 0° -> 90°, +45° -> 0°
+    servo_angle = 90 - (normalized_angle * 4)  # Scale: 45° -> 180°
+    return max(0, min(180, servo_angle))
+
 def main():
-    # Initialize camera
+    # Initialize camera with larger resolution
     picam2 = Picamera2()
-    config = picam2.create_preview_configuration({"size": (640, 480)})  # Increased resolution
+    config = picam2.create_preview_configuration({"size": (640, 480)})  # Larger resolution
     picam2.configure(config)
     picam2.start()
     
-    # Set larger display window size
-    WINDOW_NAME = "Color Line Display"
-    cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(WINDOW_NAME, 1280, 960)  # Increased window size
-    
-    print("===== Color Line Display =====")
+    print("===== Color Line Detection Visualization =====")
     
     color_priority = get_color_choices()
     if not color_priority:
@@ -133,40 +134,42 @@ def main():
     print("Press 'q' to quit or 'c' to change colors")
     
     try:
+        # Create a larger display window
+        cv2.namedWindow("Color Line Detection", cv2.WINDOW_NORMAL)
+        cv2.resizeWindow("Color Line Detection", 800, 600)  # Set initial window size
+        
         while True:
             frame = picam2.capture_array()
             
-            # Bottom ROI for line detection
+            # Bottom ROI for detection
             contour_bottom, color_name_bottom, line_angle_bottom = detect_priority_color(frame, color_priority, roi_type='bottom')
             
-            # Top ROI for angle detection
+            # Top ROI for angle visualization
             contour_top, color_name_top, line_angle_top = detect_priority_color(frame, color_priority, roi_type='top')
             
-            # Initialize display variables
-            current_color = "None"
-            outline_coords = "N/A"
-            error = 0
-            
-            # Draw ROIs
+            # Draw ROIs on the frame
             height, width = frame.shape[:2]
+            
+            # Bottom ROI (red rectangle)
             bottom_roi_height = int(height * 0.3)
+            cv2.rectangle(frame, (0, height - bottom_roi_height), (width, height), (0, 0, 255), 2)
+            
+            # Top ROI (blue rectangle)
             top_roi_height = int(height * 0.3)
+            cv2.rectangle(frame, (0, 0), (width, top_roi_height), (255, 0, 0), 2)
             
-            # Draw bottom ROI rectangle
-            cv2.rectangle(frame, (0, height - bottom_roi_height), (width, height), (255, 255, 255), 1)
-            cv2.putText(frame, "Bottom ROI", (10, height - bottom_roi_height - 10), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-            
-            # Draw top ROI rectangle
-            cv2.rectangle(frame, (0, 0), (width, top_roi_height), (255, 255, 255), 1)
-            cv2.putText(frame, "Top ROI", (10, 30), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            movement = "No line detected"
+            outline_coords = "N/A"
+            current_color = "None"
+            error = 0
+            servo_angle = 90
             
             if contour_bottom is not None:
-                current_color = color_name_bottom
                 x, y, w, h = cv2.boundingRect(contour_bottom)
                 outline_coords = f"({x}, {y}, {w}, {h})"
+                current_color = color_name_bottom
                 
+                # Draw bounding box
                 color_map = {
                     'red': (0, 0, 255),
                     'blue': (255, 0, 0),
@@ -176,32 +179,63 @@ def main():
                 }
                 cv2.rectangle(frame, (x, y), (x+w, y+h), color_map[color_name_bottom], 2)
                 
-                # Calculate error for display
+                # Calculate error
                 line_center = x + w // 2
-                frame_center = width // 2
+                frame_center = frame.shape[1] // 2
                 error = line_center - frame_center
+                
+                # Determine movement direction
+                CENTER_THRESHOLD = 20
+                if error < -CENTER_THRESHOLD:
+                    movement = "Turn Left"
+                elif error > CENTER_THRESHOLD:
+                    movement = "Turn Right"
+                else:
+                    movement = "Move Forward"
             
-            # Prepare metadata text
+            # Calculate servo angle based on top ROI
+            if contour_top is not None and color_name_top == color_name_bottom:
+                servo_angle = map_line_angle_to_servo_angle(line_angle_top)
+                # Draw angle line in top ROI
+                center_x = width // 2
+                center_y = top_roi_height // 2
+                angle_rad = np.deg2rad(line_angle_top)
+                end_x = int(center_x + 100 * np.sin(angle_rad))
+                end_y = int(center_y - 100 * np.cos(angle_rad))
+                cv2.line(frame, (center_x, center_y), (end_x, end_y), (0, 255, 0), 3)
+            
+            # Display all information
             priority_text = f"Priority: {'>'.join(color_priority)}"
             detection_text = f"Detected: {current_color}"
-            coords_text = f"Coords: {outline_coords}"
+            command_text = f"Command: {movement}"
             error_text = f"Error: {error:.2f}"
-            angle_text = f"Top ROI Angle: {line_angle_top:.2f}Â°"
+            angle_text = f"Line Angle (Top): {line_angle_top:.2f}°"
+            servo_text = f"Servo Angle: {servo_angle:.2f}°"
+            coords_text = f"BBox: {outline_coords}"
             
-            # Display metadata
-            y_offset = 60
-            cv2.putText(frame, priority_text, (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-            y_offset += 30
-            cv2.putText(frame, detection_text, (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-            y_offset += 30
-            cv2.putText(frame, coords_text, (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-            y_offset += 30
-            cv2.putText(frame, error_text, (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-            y_offset += 30
-            cv2.putText(frame, angle_text, (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            # Put all text on the frame with larger font
+            font_scale = 1.0
+            thickness = 2
+            y_start = 30
+            line_height = 40
             
-            if "DISPLAY" in os.environ:
-                cv2.imshow(WINDOW_NAME, frame)
+            cv2.putText(frame, priority_text, (10, y_start), cv2.FONT_HERSHEY_SIMPLEX, 
+                        font_scale, (0, 255, 255), thickness)
+            cv2.putText(frame, detection_text, (10, y_start + line_height), 
+                        cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 255, 255), thickness)
+            cv2.putText(frame, command_text, (10, y_start + 2*line_height), 
+                        cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 255, 255), thickness)
+            cv2.putText(frame, error_text, (10, y_start + 3*line_height), 
+                        cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 255, 255), thickness)
+            cv2.putText(frame, angle_text, (10, y_start + 4*line_height), 
+                        cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 255, 255), thickness)
+            cv2.putText(frame, servo_text, (10, y_start + 5*line_height), 
+                        cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 255, 255), thickness)
+            cv2.putText(frame, coords_text, (10, y_start + 6*line_height), 
+                        cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 255, 255), thickness)
+            
+            # Show the frame
+            cv2.imshow("Color Line Detection", frame)
             
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
@@ -213,10 +247,7 @@ def main():
                     print(f"New priority: {' > '.join(color_priority)}")
     
     except KeyboardInterrupt:
-        print("Stopping display...")
-    
-    except Exception as e:
-        print(f"Error: {e}")
+        print("Stopping...")
     
     finally:
         cv2.destroyAllWindows()
