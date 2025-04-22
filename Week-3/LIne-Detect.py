@@ -26,7 +26,7 @@ all_color_ranges = {
         ([84, 155, 189], [104, 235, 255])
     ],
     'black': [
-        ([0, 0, 0], [179, 78, 50])
+        ([0, 0, 0], [179, 50, 70])  # Increased value threshold to 70, tightened saturation to 50
     ]
 }
 
@@ -77,7 +77,7 @@ def get_color_choices():
 
 def detect_priority_color(frame, color_names, roi_type='bottom'):
     """
-    Enhanced color detection with better angle calculation
+    Enhanced color detection with improved angle calculation for top ROI
     """
     height, width = frame.shape[:2]
     if roi_type == 'bottom':
@@ -132,22 +132,53 @@ def detect_priority_color(frame, color_names, roi_type='bottom'):
                 adjusted_contour = largest_contour.copy()
                 adjusted_contour[:, :, 1] += y_offset
                 
-                # Calculate line angle using fitLine for more accuracy
-                if len(largest_contour) >= 5:  # Need at least 5 points for fitLine
-                    [vx, vy, x, y] = cv2.fitLine(largest_contour, cv2.DIST_L2, 0, 0.01, 0.01)
-                    line_angle = np.degrees(np.arctan2(vy, vx))[0]
+                # Smooth the contour to reduce noise
+                epsilon = 0.01 * cv2.arcLength(largest_contour, True)
+                smoothed_contour = cv2.approxPolyDP(largest_contour, epsilon, True)
+                
+                # Calculate line angle using multiple methods
+                line_angle = 0
+                fitline_angle = 0
+                moment_angle = 0
+                
+                # Method 1: Use fitLine for contours with enough points
+                if len(smoothed_contour) >= 5:
+                    [vx, vy, x, y] = cv2.fitLine(smoothed_contour, cv2.DIST_L2, 0, 0.01, 0.01)
+                    fitline_angle = np.degrees(np.arctan2(vy, vx))[0]
+                    if fitline_angle < -45:
+                        fitline_angle += 90
+                    elif fitline_angle > 45:
+                        fitline_angle -= 90
+                
+                # Method 2: Use moments and principal component analysis
+                M = cv2.moments(smoothed_contour)
+                if M["m00"] != 0:
+                    cx = int(M["m10"] / M["m00"])
+                    cy = int(M["m01"] / M["m00"])
                     
-                    # Adjust angle to be between -90 and 90 degrees
-                    if line_angle < -45:
-                        line_angle += 90
-                    elif line_angle > 45:
-                        line_angle -= 90
+                    # Compute the orientation using moments (eigenvector of the covariance matrix)
+                    mu20 = M["mu20"] / M["m00"]
+                    mu02 = M["mu02"] / M["m00"]
+                    mu11 = M["mu11"] / M["m00"]
+                    theta = 0.5 * np.arctan2(2 * mu11, mu20 - mu02)
+                    moment_angle = np.degrees(theta)
+                    if moment_angle < -45:
+                        moment_angle += 90
+                    elif moment_angle > 45:
+                        moment_angle -= 90
+                
+                # Method 3: Fallback to minAreaRect if needed
+                rect_angle = 0
+                rect = cv2.minAreaRect(smoothed_contour)
+                rect_angle = rect[2]
+                if rect_angle < -45:
+                    rect_angle += 90
+                
+                # Combine angles with weighted average (fitLine: 0.5, moments: 0.3, rect: 0.2)
+                if len(smoothed_contour) >= 5:
+                    line_angle = (0.5 * fitline_angle + 0.3 * moment_angle + 0.2 * rect_angle)
                 else:
-                    # Fallback to minAreaRect if not enough points
-                    rect = cv2.minAreaRect(largest_contour)
-                    line_angle = rect[2]
-                    if line_angle < -45:
-                        line_angle += 90
+                    line_angle = (0.6 * moment_angle + 0.4 * rect_angle)
                 
                 return adjusted_contour, color_name, line_angle, intersection
     
