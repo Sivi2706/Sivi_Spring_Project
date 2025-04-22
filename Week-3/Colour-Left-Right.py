@@ -56,7 +56,7 @@ default_color_ranges = {
         ([40, 180, 110], [75, 255, 190])    # Green range
     ],
     'yellow': [
-        ([80, 100, 100], [100, 255, 255])  # Yellow/Cyan range
+        ([25, 150, 150], [35, 255, 255])    # Yellow range
     ],
     'black': [
         ([0, 0, 0], [179, 100, 75])         # Black range
@@ -88,7 +88,6 @@ def get_color_choices():
     print("b = blue")
     print("g = green")
     print("y = yellow")
-    print("c = cyan")
     print("k = black (lowest priority)")
     print("q = quit program")
     print("\nEnter colors in priority order (e.g., 'rb' for red then blue)")
@@ -98,7 +97,6 @@ def get_color_choices():
         'b': 'blue',
         'g': 'green',
         'y': 'yellow',
-        'c': 'cyan',
         'k': 'black'
     }
     
@@ -213,11 +211,8 @@ def setup_camera():
     time.sleep(2)  # Allow camera to warm up
     return picam2
 
-
 # Function to allow user to calibrate black line detection parameters
-def calibrate_black_line(picam2):
-    global all_color_ranges
-    
+def calibrate_black_line(picam2, color_ranges):
     print("\nCalibrating black line detection...")
     print("Place the camera to view the black line and press 'c' to capture and calibrate.")
     print("Press 'q' to skip calibration.")
@@ -276,7 +271,7 @@ def calibrate_black_line(picam2):
                         v_max = min(255, v_max + 40)  # More margin for value
                         
                         # Update black color range
-                        all_color_ranges['black'] = [([h_min, s_min, v_min], [h_max, s_max, v_max])]
+                        color_ranges['black'] = [([h_min, s_min, v_min], [h_max, s_max, v_max])]
                         
                         print(f"Updated black line HSV range: ({h_min}, {s_min}, {v_min}) to ({h_max}, {s_max}, {v_max})")
                         
@@ -296,7 +291,7 @@ def calibrate_black_line(picam2):
     cv2.destroyWindow("Calibration")
 
 # Refined line detection function
-def detect_line(frame, color_priorities):
+def detect_line(frame, color_priorities, color_ranges):
     # Apply ROI if enabled
     if USE_ROI:
         roi_y_start = FRAME_HEIGHT - ROI_HEIGHT
@@ -325,10 +320,10 @@ def detect_line(frame, color_priorities):
     # First, check for all available lines
     all_available_colors = []
     for color_name in color_priorities:
-        color_ranges = all_color_ranges.get(color_name, [])
+        color_ranges_for_color = color_ranges.get(color_name, [])
         color_mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
 
-        for lower, upper in color_ranges:
+        for lower, upper in color_ranges_for_color:
             lower = np.array(lower, dtype=np.uint8)
             upper = np.array(upper, dtype=np.uint8)
             color_mask = cv2.bitwise_or(color_mask, cv2.inRange(hsv, lower, upper))
@@ -434,6 +429,9 @@ def main():
     right_pwm, left_pwm = setup_gpio()
     picam2 = setup_camera()
     
+    # Load calibrated color ranges
+    color_ranges = load_color_calibration()
+    
     # Get user's color priority choices
     color_priorities = get_color_choices()
     if color_priorities is None:
@@ -442,7 +440,7 @@ def main():
         return
     
     # Offer calibration
-    calibrate_black_line(picam2)
+    calibrate_black_line(picam2, color_ranges)
     
     print("Line follower with color detection started. Press 'q' in the display window or Ctrl+C to stop.")
     
@@ -452,7 +450,7 @@ def main():
     try:
         while True:
             frame = picam2.capture_array()
-            error, line_found, detected_color, available_colors = detect_line(frame, color_priorities)
+            error, line_found, detected_color, available_colors = detect_line(frame, color_priorities, color_ranges)
             
             cv2.imshow("Line Follower", frame)
             key = cv2.waitKey(1) & 0xFF
@@ -461,7 +459,7 @@ def main():
                 break
             elif key == ord('c'):
                 # Allow recalibration during runtime
-                calibrate_black_line(picam2)
+                calibrate_black_line(picam2, color_ranges)
             
             if line_found:
                 # Line is detected (can be any color including black)

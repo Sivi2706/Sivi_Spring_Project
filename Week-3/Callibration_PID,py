@@ -31,9 +31,6 @@ default_color_ranges = {
     'yellow': [
         ([25, 150, 150], [35, 255, 255])     # Yellow range
     ],
-    'cyan': [
-        ([80, 100, 100], [100, 255, 255])    # Cyan range
-    ],
     'black': [
         ([0, 0, 0], [180, 100, 75])          # Black range
     ]
@@ -164,8 +161,6 @@ def auto_calibrate_color(frame, color_name):
         mask = cv2.inRange(hsv, np.array([35, 100, 50]), np.array([85, 255, 255]))
     elif color_name == 'yellow':
         mask = cv2.inRange(hsv, np.array([20, 100, 100]), np.array([40, 255, 255]))
-    elif color_name == 'cyan':
-        mask = cv2.inRange(hsv, np.array([75, 100, 100]), np.array([105, 255, 255]))
     elif color_name == 'black':
         mask = cv2.inRange(hsv, np.array([0, 0, 0]), np.array([180, 100, 70]))
     else:
@@ -264,100 +259,118 @@ def calibrate_color(picam2, color_name, current_range):
     manual_mode = False
     auto_calibrated = False
     
-    while True:
-        frame = picam2.capture_array()
-        
-        # Apply ROI if enabled
-        if USE_ROI:
-            roi_y_start = FRAME_HEIGHT - ROI_HEIGHT
-            cv2.rectangle(frame, (0, roi_y_start), (FRAME_WIDTH, FRAME_HEIGHT), (255, 255, 0), 2)
-            roi = frame[roi_y_start:FRAME_HEIGHT, 0:FRAME_WIDTH]
-        else:
-            roi = frame
-            
-        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-        
-        # Display instruction text
-        display_instructions(frame, color_name)
-        
-        # If in manual mode, get values from trackbars
-        if manual_mode:
-            color_range = get_trackbar_values(window_name, color_name)
-        else:
-            color_range = current_range
-            
-        # Create mask with current values
-        color_mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
-        
-        for lower, upper in color_range:
-            lower_np = np.array(lower, dtype=np.uint8)
-            upper_np = np.array(upper, dtype=np.uint8)
-            partial_mask = cv2.inRange(hsv, lower_np, upper_np)
-            color_mask = cv2.bitwise_or(color_mask, partial_mask)
-            
-        # Apply morphological operations
-        kernel = np.ones((5, 5), np.uint8)
-        color_mask = cv2.morphologyEx(color_mask, cv2.MORPH_CLOSE, kernel)
-        
-        # Find contours
-        contours, _ = cv2.findContours(color_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        valid_contours = [cnt for cnt in contours if cv2.contourArea(cnt) > MIN_CONTOUR_AREA]
-        
-        # Display the mask
-        mask_display = cv2.cvtColor(color_mask, cv2.COLOR_GRAY2BGR)
-        cv2.imshow(f"{color_name} Mask", mask_display)
-        
-        # Draw the valid contours
-        contour_frame = roi.copy()
-        cv2.drawContours(contour_frame, valid_contours, -1, (0, 255, 0), 2)
-        cv2.imshow(f"{color_name} Contours", contour_frame)
-        
-        # Show the main frame
-        cv2.imshow("Calibration", frame)
-        
-        key = cv2.waitKey(1) & 0xFF
-        
-        if key == ord('q'):
-            # Quit calibration
-            break
-        elif key == ord('c'):
-            if not auto_calibrated:
-                # Try auto-calibration first
-                auto_result = auto_calibrate_color(roi, color_name)
-                if auto_result:
-                    current_range = auto_result
-                    auto_calibrated = True
-                    print(f"Auto-calibrated {color_name}: {current_range}")
-                    
-                    # Update trackbars with auto values
-                    cv2.destroyWindow(window_name)
-                    window_name = create_trackbars(color_name, current_range)
-                    manual_mode = True
-                else:
-                    print(f"Auto-calibration failed for {color_name}. Switching to manual mode.")
-                    manual_mode = True
-            else:
-                # Save manual calibration
-                if manual_mode:
-                    current_range = get_trackbar_values(window_name, color_name)
-                    print(f"Manual calibration for {color_name}: {current_range}")
-                return current_range
-        elif key == ord('m'):
-            # Switch to manual mode
-            manual_mode = True
-            if not auto_calibrated:
-                print(f"Switching to manual calibration for {color_name}")
-        elif key == ord('s'):
-            # Skip this color
-            print(f"Skipping calibration for {color_name}")
-            return current_range
-            
-    # Clean up
-    cv2.destroyWindow(window_name)
-    cv2.destroyWindow(f"{color_name} Mask")
-    cv2.destroyWindow(f"{color_name} Contours")
+    # Always capture the current values to ensure we have something to return
+    # if the user exits abruptly
+    latest_values = current_range
     
-    return current_range
+    try:
+        while True:
+            frame = picam2.capture_array()
+            
+            # Apply ROI if enabled
+            if USE_ROI:
+                roi_y_start = FRAME_HEIGHT - ROI_HEIGHT
+                cv2.rectangle(frame, (0, roi_y_start), (FRAME_WIDTH, FRAME_HEIGHT), (255, 255, 0), 2)
+                roi = frame[roi_y_start:FRAME_HEIGHT, 0:FRAME_WIDTH]
+            else:
+                roi = frame
+                
+            hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+            
+            # Display instruction text
+            display_instructions(frame, color_name)
+            
+            # If in manual mode, get values from trackbars
+            if manual_mode:
+                color_range = get_trackbar_values(window_name, color_name)
+                # Always update latest_values when in manual mode
+                latest_values = color_range
+            else:
+                color_range = current_range
+                
+            # Create mask with current values
+            color_mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
+            
+            for lower, upper in color_range:
+                lower_np = np.array(lower, dtype=np.uint8)
+                upper_np = np.array(upper, dtype=np.uint8)
+                partial_mask = cv2.inRange(hsv, lower_np, upper_np)
+                color_mask = cv2.bitwise_or(color_mask, partial_mask)
+                
+            # Apply morphological operations
+            kernel = np.ones((5, 5), np.uint8)
+            color_mask = cv2.morphologyEx(color_mask, cv2.MORPH_CLOSE, kernel)
+            
+            # Find contours
+            contours, _ = cv2.findContours(color_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            valid_contours = [cnt for cnt in contours if cv2.contourArea(cnt) > MIN_CONTOUR_AREA]
+            
+            # Display the mask
+            mask_display = cv2.cvtColor(color_mask, cv2.COLOR_GRAY2BGR)
+            cv2.imshow(f"{color_name} Mask", mask_display)
+            
+            # Draw the valid contours
+            contour_frame = roi.copy()
+            cv2.drawContours(contour_frame, valid_contours, -1, (0, 255, 0), 2)
+            cv2.imshow(f"{color_name} Contours", contour_frame)
+            
+            # Show the main frame
+            cv2.imshow("Calibration", frame)
+            
+            key = cv2.waitKey(1) & 0xFF
+            
+            if key == ord('q'):
+                # Quit calibration but still return the latest values
+                print(f"Exiting calibration for {color_name}. Recording current values.")
+                break
+            elif key == ord('c'):
+                if not auto_calibrated:
+                    # Try auto-calibration first
+                    auto_result = auto_calibrate_color(roi, color_name)
+                    if auto_result:
+                        current_range = auto_result
+                        latest_values = auto_result  # Update latest values
+                        auto_calibrated = True
+                        print(f"Auto-calibrated {color_name}: {current_range}")
+                        
+                        # Update trackbars with auto values
+                        cv2.destroyWindow(window_name)
+                        window_name = create_trackbars(color_name, current_range)
+                        manual_mode = True
+                    else:
+                        print(f"Auto-calibration failed for {color_name}. Switching to manual mode.")
+                        manual_mode = True
+                else:
+                    # Save manual calibration
+                    if manual_mode:
+                        current_range = get_trackbar_values(window_name, color_name)
+                        latest_values = current_range  # Update latest values
+                        print(f"Manual calibration for {color_name}: {current_range}")
+                    return latest_values
+            elif key == ord('m'):
+                # Switch to manual mode
+                manual_mode = True
+                if not auto_calibrated:
+                    print(f"Switching to manual calibration for {color_name}")
+            elif key == ord('s'):
+                # Skip this color
+                print(f"Skipping calibration for {color_name}")
+                return current_range
+                
+    except Exception as e:
+        print(f"Error during calibration of {color_name}: {e}")
+        print(f"Saving current values for {color_name}")
+    finally:
+        # Clean up
+        try:
+            cv2.destroyWindow(window_name)
+            cv2.destroyWindow(f"{color_name} Mask")
+            cv2.destroyWindow(f"{color_name} Contours")
+        except:
+            pass
+        
+    # Always return the latest values, even if there was an exception
+    return latest_values
 
 def main():
     # Initialize camera
@@ -369,7 +382,8 @@ def main():
     color_ranges = load_existing_calibration()
     
     # Colors to calibrate (order matters)
-    colors_to_calibrate = ['red', 'green', 'blue', 'yellow', 'cyan', 'black']
+    # Removed 'cyan' from the list to match main file
+    colors_to_calibrate = ['red', 'green', 'blue', 'yellow', 'black']
     
     print("\nColor Calibration Tool for Line Following Robot")
     print("===============================================")
@@ -384,22 +398,29 @@ def main():
     time.sleep(3)
     
     try:
+        # Create a copy for incremental updates
+        updated_ranges = color_ranges.copy()
+        
         for color in colors_to_calibrate:
             print(f"\nCalibrating {color}...")
             current_range = color_ranges.get(color, default_color_ranges[color])
             calibrated_range = calibrate_color(picam2, color, current_range)
-            color_ranges[color] = calibrated_range
+            
+            # Update immediately after each color is calibrated
+            updated_ranges[color] = calibrated_range
+            save_calibration(updated_ranges)
+            print(f"Updated calibration for {color} saved.")
         
-        # Save final calibration
-        save_calibration(color_ranges)
         print("\nCalibration complete!")
         
     except KeyboardInterrupt:
         print("\nCalibration interrupted.")
-        save_calibration(color_ranges)
+        # Final save with whatever we have
+        save_calibration(updated_ranges)
         print("Partial calibration saved.")
     finally:
         cv2.destroyAllWindows()
+        picam2.stop()
         print("Exiting calibration tool.")
 
 if __name__ == "__main__":
