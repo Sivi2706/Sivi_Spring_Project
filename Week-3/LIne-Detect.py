@@ -9,7 +9,7 @@ FRAME_HEIGHT = 480         # Camera frame height
 
 # Threshold for turning
 TURN_THRESHOLD = 100       # Error threshold for pivoting
-CENTER_THRESHOLD = 10      # Lowered for more responsive turns (previously 20)
+CENTER_THRESHOLD = 10      # Lowered for more responsive turns
 
 # Define all available color ranges (HSV format)
 all_color_ranges = {
@@ -38,7 +38,10 @@ SMOOTHING_FACTOR = 0.7  # For exponential smoothing
 # Initialize camera
 def setup_camera():
     picam2 = Picamera2()
-    config = picam2.create_preview_configuration(main={"size": (FRAME_WIDTH, FRAME_HEIGHT)})
+    # Configure the camera to capture in a raw format (BGR) to avoid ICC profile issues
+    config = picam2.create_preview_configuration(
+        main={"size": (FRAME_WIDTH, FRAME_HEIGHT), "format": "BGR888"}
+    )
     picam2.configure(config)
     picam2.start()
     return picam2
@@ -351,7 +354,14 @@ def main():
         
         tight_turn = False
         while True:
+            # Capture frame and ensure it's in BGR format
             frame = picam2.capture_array()
+            if frame is not None:
+                # Ensure the frame is in BGR format for OpenCV
+                if frame.shape[-1] == 4:  # If frame has an alpha channel (RGBA)
+                    frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+                elif frame.shape[-1] != 3:  # If frame is not in a recognizable format
+                    frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
             
             # Bottom ROI for motor control (30% of height)
             contour_bottom, color_name_bottom, line_angle_bottom, intersection_bottom = detect_priority_color(
