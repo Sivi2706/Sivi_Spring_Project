@@ -11,25 +11,23 @@ config = picam2.create_preview_configuration({"size": (640, 480)})
 picam2.configure(config)
 picam2.start()
 
-# Define motor driver GPIO pins
-motor_in1 = 22  # Left motor forward
-motor_in2 = 27  # Left motor backward
-motor_in3 = 17  # Right motor forward
-motor_in4 = 4   # Right motor backward
-ENA = 13  # Left motor speed control
-ENB = 12  # Right motor speed control
+# Define motor driver GPIO pins (updated from second code)
+IN1, IN2 = 22, 27         # Left motor control
+IN3, IN4 = 17, 4          # Right motor control
+ENA, ENB = 13, 12         # PWM pins for motors (ENA = Right, ENB = Left)
 
 # Setup GPIO
 GPIO.setmode(GPIO.BCM)
-GPIO.setup([motor_in1, motor_in2, motor_in3, motor_in4, ENA, ENB], GPIO.OUT)
+GPIO.setwarnings(False)
+GPIO.setup([IN1, IN2, IN3, IN4, ENA, ENB], GPIO.OUT)
 
 # Setup PWM for speed control (frequency: 1kHz)
-pwm1 = GPIO.PWM(ENA, 1000)
-pwm2 = GPIO.PWM(ENB, 1000)
-pwm1.start(0)
-pwm2.start(0)
+right_pwm = GPIO.PWM(ENA, 1000)  # Right motor
+left_pwm = GPIO.PWM(ENB, 1000)   # Left motor
+right_pwm.start(0)
+left_pwm.start(0)
 
-# Speed settings
+# Speed settings (keeping original values)
 base_speed = 55
 turn_speed = 70
 reverse_speed = 50
@@ -132,51 +130,51 @@ def detect_priority_color(frame, color_names):
 def set_speed(left_speed, right_speed):
     left_speed = max(0, min(100, left_speed))
     right_speed = max(0, min(100, right_speed))
-    pwm1.ChangeDutyCycle(left_speed)
-    pwm2.ChangeDutyCycle(right_speed)
+    left_pwm.ChangeDutyCycle(left_speed)
+    right_pwm.ChangeDutyCycle(right_speed)
 
 def move_forward():
-    GPIO.output(motor_in1, GPIO.HIGH)
-    GPIO.output(motor_in2, GPIO.LOW)
-    GPIO.output(motor_in3, GPIO.HIGH)
-    GPIO.output(motor_in4, GPIO.LOW)
+    GPIO.output(IN1, GPIO.HIGH)   # Left forward
+    GPIO.output(IN2, GPIO.LOW)
+    GPIO.output(IN3, GPIO.LOW)    # Right forward
+    GPIO.output(IN4, GPIO.HIGH)
     set_speed(base_speed, base_speed)
     print("Moving Forward")
     return "Moving Forward"
 
 def move_reverse():
-    GPIO.output(motor_in1, GPIO.LOW)
-    GPIO.output(motor_in2, GPIO.HIGH)
-    GPIO.output(motor_in3, GPIO.LOW)
-    GPIO.output(motor_in4, GPIO.HIGH)
+    GPIO.output(IN1, GPIO.LOW)    # Left backward
+    GPIO.output(IN2, GPIO.HIGH)
+    GPIO.output(IN3, GPIO.HIGH)   # Right backward
+    GPIO.output(IN4, GPIO.LOW)
     set_speed(reverse_speed, reverse_speed)
     print("Moving Reverse")
     return "Moving Reverse"
 
 def turn_right():
-    GPIO.output(motor_in1, GPIO.HIGH)
-    GPIO.output(motor_in2, GPIO.LOW)
-    GPIO.output(motor_in3, GPIO.LOW)
-    GPIO.output(motor_in4, GPIO.HIGH)
+    GPIO.output(IN1, GPIO.HIGH)   # Left forward
+    GPIO.output(IN2, GPIO.LOW)
+    GPIO.output(IN3, GPIO.HIGH)   # Right backward
+    GPIO.output(IN4, GPIO.LOW)
     set_speed(turn_speed, turn_speed)
     print("Turning Right")
     return "Turning Right"
 
 def turn_left():
-    GPIO.output(motor_in1, GPIO.LOW)
-    GPIO.output(motor_in2, GPIO.HIGH)
-    GPIO.output(motor_in3, GPIO.HIGH)
-    GPIO.output(motor_in4, GPIO.LOW)
+    GPIO.output(IN1, GPIO.LOW)    # Left backward
+    GPIO.output(IN2, GPIO.HIGH)
+    GPIO.output(IN3, GPIO.LOW)    # Right forward
+    GPIO.output(IN4, GPIO.HIGH)
     set_speed(turn_speed, turn_speed)
     print("Turning Left")
     return "Turning Left"
 
 def stop():
     set_speed(0, 0)
-    GPIO.output(motor_in1, GPIO.LOW)
-    GPIO.output(motor_in2, GPIO.LOW)
-    GPIO.output(motor_in3, GPIO.LOW)
-    GPIO.output(motor_in4, GPIO.LOW)
+    GPIO.output(IN1, GPIO.LOW)
+    GPIO.output(IN2, GPIO.LOW)
+    GPIO.output(IN3, GPIO.LOW)
+    GPIO.output(IN4, GPIO.LOW)
     print("Stopping")
     return "Stopped"
 
@@ -259,8 +257,8 @@ def main():
     
     finally:
         stop()
-        pwm1.stop()
-        pwm2.stop()
+        left_pwm.stop()
+        right_pwm.stop()
         cv2.destroyAllWindows()
         picam2.stop()
         GPIO.cleanup()
