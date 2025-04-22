@@ -186,7 +186,7 @@ def main():
             detection_text = f"Detected: {current_color}"
             coords_text = f"Coords: {outline_coords}"
             error_text = f"Error: {error:.2f}"
-            angle_text = f"Top ROI Angle: {line_angle_top:.2f}°"
+            angle_text = f"Top ROI Angle: {line_angle_top:.2f}Â°"
             
             # Display metadata
             y_offset = 60
