@@ -8,7 +8,8 @@ FRAME_WIDTH = 640          # Camera frame width
 FRAME_HEIGHT = 480         # Camera frame height
 
 # Threshold for turning
-TURN_THRESHOLD = 100        # Error threshold for pivoting
+TURN_THRESHOLD = 100       # Error threshold for pivoting
+CENTER_THRESHOLD = 10      # Lowered for more responsive turns (previously 20)
 
 # Define all available color ranges (HSV format)
 all_color_ranges = {
@@ -26,9 +27,13 @@ all_color_ranges = {
         ([84, 155, 189], [104, 235, 255])
     ],
     'black': [
-        ([0, 0, 0], [179, 50, 70])  # Increased value threshold to 70, tightened saturation to 50
+        ([0, 0, 0], [179, 50, 70])
     ]
 }
+
+# Global variable for temporal smoothing of angles
+prev_line_angle = 0
+SMOOTHING_FACTOR = 0.7  # For exponential smoothing
 
 # Initialize camera
 def setup_camera():
@@ -75,17 +80,23 @@ def get_color_choices():
         else:
             print("Invalid choice. Please try again.")
 
-def detect_priority_color(frame, color_names, roi_type='bottom'):
+def detect_priority_color(frame, color_names, roi_type='bottom', tight_turn=False):
     """
-    Enhanced color detection with improved angle calculation for top ROI
+    Enhanced color detection with dynamic ROI and segmented contour analysis for tight turns
     """
+    global prev_line_angle
     height, width = frame.shape[:2]
+
+    # Dynamic ROI adjustment for tight turns in top ROI
     if roi_type == 'bottom':
         roi_height = int(height * 0.3)  # Bottom 30%
         roi = frame[height - roi_height:height, :]
         y_offset = height - roi_height
     else:  # top
-        roi_height = int(height * 0.7)  # Top 70%
+        if tight_turn:
+            roi_height = int(height * 0.4)  # Reduce to 40% for tight turns
+        else:
+            roi_height = int(height * 0.7)  # Default 70%
         roi = frame[0:roi_height, :]
         y_offset = 0
     
@@ -136,49 +147,50 @@ def detect_priority_color(frame, color_names, roi_type='bottom'):
                 epsilon = 0.01 * cv2.arcLength(largest_contour, True)
                 smoothed_contour = cv2.approxPolyDP(largest_contour, epsilon, True)
                 
-                # Calculate line angle using multiple methods
+                # Calculate line angle using segmented contour analysis for top ROI
                 line_angle = 0
-                fitline_angle = 0
-                moment_angle = 0
-                
-                # Method 1: Use fitLine for contours with enough points
-                if len(smoothed_contour) >= 5:
-                    [vx, vy, x, y] = cv2.fitLine(smoothed_contour, cv2.DIST_L2, 0, 0.01, 0.01)
-                    fitline_angle = np.degrees(np.arctan2(vy, vx))[0]
-                    if fitline_angle < -45:
-                        fitline_angle += 90
-                    elif fitline_angle > 45:
-                        fitline_angle -= 90
-                
-                # Method 2: Use moments and principal component analysis
-                M = cv2.moments(smoothed_contour)
-                if M["m00"] != 0:
-                    cx = int(M["m10"] / M["m00"])
-                    cy = int(M["m01"] / M["m00"])
+                if roi_type == 'top':
+                    # Split contour into segments
+                    segment_size = len(smoothed_contour) // 3  # Split into 3 segments
+                    angles = []
+                    for i in range(0, len(smoothed_contour), segment_size):
+                        segment = smoothed_contour[i:i + segment_size]
+                        if len(segment) >= 5:
+                            [vx, vy, x, y] = cv2.fitLine(segment, cv2.DIST_L2, 0, 0.01, 0.01)
+                            angle = np.degrees(np.arctan2(vy, vx))[0]
+                            if angle < -45:
+                                angle += 90
+                            elif angle > 45:
+                                angle -= 90
+                            angles.append(angle)
                     
-                    # Compute the orientation using moments (eigenvector of the covariance matrix)
-                    mu20 = M["mu20"] / M["m00"]
-                    mu02 = M["mu02"] / M["m00"]
-                    mu11 = M["mu11"] / M["m00"]
-                    theta = 0.5 * np.arctan2(2 * mu11, mu20 - mu02)
-                    moment_angle = np.degrees(theta)
-                    if moment_angle < -45:
-                        moment_angle += 90
-                    elif moment_angle > 45:
-                        moment_angle -= 90
+                    # Average the segment angles
+                    if angles:
+                        line_angle = np.mean(angles)
+                    else:
+                        # Fallback to single fitLine if segmentation fails
+                        if len(smoothed_contour) >= 5:
+                            [vx, vy, x, y] = cv2.fitLine(smoothed_contour, cv2.DIST_L2, 0, 0.01, 0.01)
+                            line_angle = np.degrees(np.arctan2(vy, vx))[0]
+                            if line_angle < -45:
+                                line_angle += 90
+                            elif line_angle > 45:
+                                line_angle -= 90
                 
-                # Method 3: Fallback to minAreaRect if needed
-                rect_angle = 0
-                rect = cv2.minAreaRect(smoothed_contour)
-                rect_angle = rect[2]
-                if rect_angle < -45:
-                    rect_angle += 90
-                
-                # Combine angles with weighted average (fitLine: 0.5, moments: 0.3, rect: 0.2)
-                if len(smoothed_contour) >= 5:
-                    line_angle = (0.5 * fitline_angle + 0.3 * moment_angle + 0.2 * rect_angle)
                 else:
-                    line_angle = (0.6 * moment_angle + 0.4 * rect_angle)
+                    # For bottom ROI, use the existing method
+                    if len(smoothed_contour) >= 5:
+                        [vx, vy, x, y] = cv2.fitLine(smoothed_contour, cv2.DIST_L2, 0, 0.01, 0.01)
+                        line_angle = np.degrees(np.arctan2(vy, vx))[0]
+                        if line_angle < -45:
+                            line_angle += 90
+                        elif line_angle > 45:
+                            line_angle -= 90
+                
+                # Apply temporal smoothing to the angle
+                if roi_type == 'top':
+                    line_angle = SMOOTHING_FACTOR * prev_line_angle + (1 - SMOOTHING_FACTOR) * line_angle
+                    prev_line_angle = line_angle
                 
                 return adjusted_contour, color_name, line_angle, intersection
     
@@ -192,8 +204,11 @@ def create_display_frame(frame, color_priority, contour_bottom, color_name_botto
     display_frame = frame.copy()
     height, width = frame.shape[:2]
     
+    # Determine if it's a tight turn (based on top angle)
+    tight_turn = abs(line_angle_top) > 20  # Threshold for tight turn detection
+    
     # Draw ROIs
-    top_roi_height = int(height * 0.7)
+    top_roi_height = int(height * 0.4 if tight_turn else height * 0.7)
     bottom_roi_height = int(height * 0.3)
     
     # Bottom ROI (red rectangle)
@@ -242,7 +257,6 @@ def create_display_frame(frame, color_priority, contour_bottom, color_name_botto
         cv2.line(display_frame, (frame_center, y + h//2), (line_center, y + h//2), (255, 0, 0), 2)
         
         # Determine movement direction
-        CENTER_THRESHOLD = 20
         if error < -CENTER_THRESHOLD:
             movement = "Turn Left"
         elif error > CENTER_THRESHOLD:
@@ -271,8 +285,11 @@ def create_display_frame(frame, color_priority, contour_bottom, color_name_botto
         cv2.putText(display_frame, angle_text, (width-200, 30), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
         
-        # Calculate and display servo angle
-        servo_angle = 90 - (line_angle_top * 2)  # Simplified mapping
+        # Non-linear servo angle mapping for tight turns
+        if abs(line_angle_top) > 20:  # Amplify for tight turns
+            servo_angle = 90 - (line_angle_top * 3)  # More aggressive adjustment
+        else:
+            servo_angle = 90 - (line_angle_top * 2)  # Normal adjustment
         servo_angle = max(0, min(180, servo_angle))
         servo_text = f"Servo: {servo_angle:.1f}°"
         cv2.putText(display_frame, servo_text, (width-200, 60), 
@@ -311,7 +328,7 @@ def create_display_frame(frame, color_priority, contour_bottom, color_name_botto
     cv2.putText(display_frame, servo_text, (20, y_start + 3*line_height), 
                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
     
-    return display_frame, error, movement, servo_angle
+    return display_frame, error, movement, servo_angle, tight_turn
 
 # Main function
 def main():
@@ -332,19 +349,20 @@ def main():
         cv2.namedWindow("Color Line Detection", cv2.WINDOW_NORMAL)
         cv2.resizeWindow("Color Line Detection", 800, 600)
         
+        tight_turn = False
         while True:
             frame = picam2.capture_array()
             
             # Bottom ROI for motor control (30% of height)
             contour_bottom, color_name_bottom, line_angle_bottom, intersection_bottom = detect_priority_color(
-                frame, color_priority, roi_type='bottom')
+                frame, color_priority, roi_type='bottom', tight_turn=tight_turn)
             
-            # Top ROI for angle visualization (70% of height)
+            # Top ROI for angle visualization (dynamic height based on tight turn)
             contour_top, color_name_top, line_angle_top, intersection_top = detect_priority_color(
-                frame, color_priority, roi_type='top')
+                frame, color_priority, roi_type='top', tight_turn=tight_turn)
             
             # Create display frame with all visual elements
-            display_frame, error, movement, servo_angle = create_display_frame(
+            display_frame, error, movement, servo_angle, tight_turn = create_display_frame(
                 frame, color_priority, contour_bottom, color_name_bottom, line_angle_bottom,
                 contour_top, color_name_top, line_angle_top, intersection_top)
             
