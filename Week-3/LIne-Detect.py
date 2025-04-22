@@ -35,14 +35,28 @@ all_color_ranges = {
 prev_line_angle = 0
 SMOOTHING_FACTOR = 0.7  # For exponential smoothing
 
-# Initialize camera
+# Initialize camera with white balance adjustment
 def setup_camera():
     picam2 = Picamera2()
-    # Configure the camera to capture in a raw format (BGR) to avoid ICC profile issues
+    # Configure the camera to capture in BGR format
     config = picam2.create_preview_configuration(
         main={"size": (FRAME_WIDTH, FRAME_HEIGHT), "format": "BGR888"}
     )
     picam2.configure(config)
+
+    # Disable automatic white balance and set manual gains
+    picam2.set_controls({
+        "AwbEnable": 0,  # Disable AWB
+        "ColourGains": (1.5, 2.0)  # (red_gain, blue_gain) - increase blue gain to correct blue colors
+    })
+
+    # Alternatively, you can enable AWB with a specific mode if manual gains don't work
+    # Uncomment the following lines to use AWB instead
+    # picam2.set_controls({
+    #     "AwbEnable": 1,
+    #     "AwbMode": "indoor"  # Options: auto, indoor, daylight, cloudy, etc.
+    # })
+
     picam2.start()
     return picam2
 
