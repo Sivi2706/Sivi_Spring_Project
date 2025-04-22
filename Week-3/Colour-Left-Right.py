@@ -47,8 +47,9 @@ all_color_ranges = {
         ([40, 180, 110], [75, 255, 190])    # Adjusted green range
     ],
     'yellow': [
-        ([20, 155, 189], [35, 235, 255])    # Adjusted yellow range
+        ([80, 100, 100], [100, 255, 255])  # Adjusted to detect cyan (instead of yellow)
     ],
+
     'black': [
         ([0, 0, 0], [179, 78, 50])          # Original black range
     ]
@@ -185,50 +186,57 @@ def detect_line(frame, color_priorities):
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     center_x = FRAME_WIDTH // 2
     cv2.line(frame, (center_x, 0), (center_x, FRAME_HEIGHT), (0, 0, 255), 2)
-    
+
     best_contour = None
     best_color = None
     max_area = 0
-    
-    # Check each color in priority order
+    best_cx, best_cy = -1, -1
+
     for color_name in color_priorities:
         color_ranges = all_color_ranges.get(color_name, [])
         color_mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
-        
+
         for lower, upper in color_ranges:
             lower = np.array(lower, dtype=np.uint8)
             upper = np.array(upper, dtype=np.uint8)
             color_mask = cv2.bitwise_or(color_mask, cv2.inRange(hsv, lower, upper))
-        
-        # Find contours in the color mask
+
         contours, _ = cv2.findContours(color_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
+
         for contour in contours:
             area = cv2.contourArea(contour)
             if area > MIN_CONTOUR_AREA and area > max_area:
                 max_area = area
                 best_contour = contour
                 best_color = color_name
-    
+
     if best_contour is not None:
         M = cv2.moments(best_contour)
         if M["m00"] != 0:
-            cx = int(M["m10"] / M["m00"])
-            cy = int(M["m01"] / M["m00"])
-            
+            best_cx = int(M["m10"] / M["m00"])
+            best_cy = int(M["m01"] / M["m00"])
+
+            hsv_value = hsv[best_cy, best_cx]  # Get HSV value at contour center
+            h, s, v = hsv_value
+
             # Draw the contour and center point
             contour_color = (0, 255, 0) if best_color != 'black' else (128, 128, 128)
             cv2.drawContours(frame, [best_contour], -1, contour_color, 2)
-            cv2.circle(frame, (cx, cy), 5, (255, 0, 0), -1)
-            cv2.line(frame, (center_x, cy), (cx, cy), (255, 0, 0), 2)
-            
-            error = cx - center_x
+            cv2.circle(frame, (best_cx, best_cy), 5, (255, 0, 0), -1)
+            cv2.line(frame, (center_x, best_cy), (best_cx, best_cy), (255, 0, 0), 2)
+
+            error = best_cx - center_x
+
+            # Draw text
             cv2.putText(frame, f"{best_color.capitalize()} Line, Error: {error}", (10, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, contour_color, 2)
-            
+            cv2.putText(frame, f"HSV: ({h}, {s}, {v})", (10, 60),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
             return error, True, best_color
-    
+
     return 0, False, None
+
 
 # Main function
 def main():
