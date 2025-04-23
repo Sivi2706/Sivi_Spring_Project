@@ -368,11 +368,19 @@ def detect_line(frame, color_priorities, color_ranges):
         roi = frame
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     
+    # Calculate center of ROI for HSV value
     center_x = FRAME_WIDTH // 2
-    cv2.line(frame, (center_x, 0), (center_x, FRAME_HEIGHT), (0, 0, 255), 2)
+    center_y = ROI_HEIGHT // 2 if USE_ROI else FRAME_HEIGHT // 2
+    h, s, v = hsv[center_y, center_x]
     
+    # Draw center line and ROI
+    cv2.line(frame, (center_x, 0), (center_x, FRAME_HEIGHT), (0, 0, 255), 2)
     if USE_ROI:
         cv2.rectangle(frame, (0, roi_y_start), (FRAME_WIDTH, FRAME_HEIGHT), (255, 255, 0), 2)
+
+    # Display HSV value at center of ROI
+    cv2.putText(frame, f"Center HSV: ({h}, {s}, {v})", (10, 120),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
     best_contour = None
     best_color = None
