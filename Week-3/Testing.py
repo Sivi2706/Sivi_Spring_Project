@@ -18,33 +18,25 @@ ServoMotor = 18           # Servo motor PWM pin
 WHEEL_DIAMETER = 4.05      # cm
 PULSES_PER_REVOLUTION = 20
 WHEEL_CIRCUMFERENCE = np.pi * WHEEL_DIAMETER  # cm
-PWM_FREQ = 1000           # Motor PWM frequency
-SERVO_FREQ = 50           # Servo PWM frequency (50 Hz)
+
+# Line following parameters
 BASE_SPEED = 45           # Base motor speed (0-100)
 TURN_SPEED = 60           # Speed for pivot turns (0-100)
-REVERSE_SPEED = 40        # Speed when reversing
-MIN_CONTOUR_AREA = 800    # Minimum area for valid contours
-FRAME_WIDTH = 640         # Camera frame width
-FRAME_HEIGHT = 480        # Camera frame height
-TURN_THRESHOLD = 100      # Error threshold for pivoting
+MIN_CONTOUR_AREA = 800     # Minimum area for valid contours
+FRAME_WIDTH = 640          # Camera frame width
+FRAME_HEIGHT = 480         # Camera frame height
+TURN_THRESHOLD = 100       # Error threshold for pivoting
 
 # ROI parameters
-USE_ROI = True            # Enable ROI for line detection
+USE_ROI = True             # Enable ROI for line detection
 BOTTOM_ROI_HEIGHT = int(FRAME_HEIGHT * 0.30)  # 30% for bottom PID ROI
 TOP_ROI_HEIGHT = int(FRAME_HEIGHT * 0.70)     # 70% for top line angle ROI
 
 # Servo parameters
-SERVO_CENTER = 7.5        # Duty cycle for 90° (center, typically 7.5% at 50 Hz)
-SERVO_RANGE = 2.5         # ±2.5% duty cycle for ±45° (5% to 10% duty cycle)
-SERVO_MIN_DUTY = SERVO_CENTER - SERVO_RANGE  # 5% duty cycle (~45°)
-SERVO_MAX_DUTY = SERVO_CENTER + SERVO_RANGE  # 10% duty cycle (~135°)
-
-# PID parameters
-KP = 0.1                  # Proportional gain
-KI = 0.01                 # Integral gain
-KD = 0.05                 # Derivative gain
-integral = 0
-last_error = 0
+SERVO_FREQ = 50           # Hz
+SERVO_CENTER_DUTY = 7.5   # Duty cycle for 90 degrees (1.5 ms pulse)
+SERVO_MIN_DUTY = 5.0      # Duty cycle for 0 degrees (1 ms pulse)
+SERVO_MAX_DUTY = 10.0     # Duty cycle for 180 degrees (2 ms pulse)
 
 # Variables to store encoder counts
 right_counter = 0
@@ -165,49 +157,41 @@ def setup_gpio():
     GPIO.add_event_detect(encoderPinLeft, GPIO.RISING, callback=left_encoder_callback)
     
     # Set up PWM for motors
-    right_pwm = GPIO.PWM(ENA, PWM_FREQ)
-    left_pwm = GPIO.PWM(ENB, PWM_FREQ)
+    right_pwm = GPIO.PWM(ENA, 1000)  # 1000 Hz frequency
+    left_pwm = GPIO.PWM(ENB, 1000)
     right_pwm.start(0)
     left_pwm.start(0)
     
     # Set up PWM for servo
     servo_pwm = GPIO.PWM(ServoMotor, SERVO_FREQ)
-    servo_pwm.start(SERVO_CENTER)  # Start at center (90°)
+    servo_pwm.start(SERVO_CENTER_DUTY)  # Start at center position
     
     return right_pwm, left_pwm, servo_pwm
 
 # Motor control functions
-def move_forward(right_pwm, left_pwm, right_speed, left_speed):
-    GPIO.output(IN1, GPIO.HIGH)
+def pivot_turn_right(right_pwm, left_pwm):
+    GPIO.output(IN1, GPIO.HIGH)   # Left forward
     GPIO.output(IN2, GPIO.LOW)
-    GPIO.output(IN3, GPIO.LOW)
-    GPIO.output(IN4, GPIO.HIGH)
-    right_pwm.ChangeDutyCycle(min(max(right_speed, 0), 100))
-    left_pwm.ChangeDutyCycle(min(max(left_speed, 0), 100))
-
-def move_backward(right_pwm, left_pwm, speed):
-    GPIO.output(IN1, GPIO.LOW)
-    GPIO.output(IN2, GPIO.HIGH)
-    GPIO.output(IN3, GPIO.HIGH)
+    GPIO.output(IN3, GPIO.HIGH)   # Right backward
     GPIO.output(IN4, GPIO.LOW)
-    right_pwm.ChangeDutyCycle(speed)
-    left_pwm.ChangeDutyCycle(speed)
+    right_pwm.ChangeDutyCycle(TURN_SPEED)
+    left_pwm.ChangeDutyCycle(TURN_SPEED)
 
-def pivot_left(right_pwm, left_pwm):
-    GPIO.output(IN1, GPIO.LOW)
+def pivot_turn_left(right_pwm, left_pwm):
+    GPIO.output(IN1, GPIO.LOW)    # Left backward
     GPIO.output(IN2, GPIO.HIGH)
-    GPIO.output(IN3, GPIO.LOW)
+    GPIO.output(IN3, GPIO.LOW)    # Right forward
     GPIO.output(IN4, GPIO.HIGH)
     right_pwm.ChangeDutyCycle(TURN_SPEED)
     left_pwm.ChangeDutyCycle(TURN_SPEED)
 
-def pivot_right(right_pwm, left_pwm):
+def move_forward(right_pwm, left_pwm):
     GPIO.output(IN1, GPIO.HIGH)
     GPIO.output(IN2, GPIO.LOW)
-    GPIO.output(IN3, GPIO.HIGH)
-    GPIO.output(IN4, GPIO.LOW)
-    right_pwm.ChangeDutyCycle(TURN_SPEED)
-    left_pwm.ChangeDutyCycle(TURN_SPEED)
+    GPIO.output(IN3, GPIO.LOW)
+    GPIO.output(IN4, GPIO.HIGH)
+    right_pwm.ChangeDutyCycle(BASE_SPEED)
+    left_pwm.ChangeDutyCycle(BASE_SPEED)
 
 def stop_motors(right_pwm, left_pwm):
     right_pwm.ChangeDutyCycle(0)
@@ -219,13 +203,10 @@ def stop_motors(right_pwm, left_pwm):
 
 # Servo control function
 def set_servo_angle(servo_pwm, line_angle):
-    # Map line angle (0° to 180°) to servo duty cycle (5% to 10%)
-    # 90° line angle = 90° servo angle (7.5% duty cycle)
-    normalized_angle = (line_angle - 90) / 45  # Scale to -1 to 1
-    duty_cycle = SERVO_CENTER + (normalized_angle * SERVO_RANGE)
-    duty_cycle = min(max(duty_cycle, SERVO_MIN_DUTY), SERVO_MAX_DUTY)
+    # Map line angle (0-180 degrees) to duty cycle (5-10%)
+    duty_cycle = SERVO_MIN_DUTY + (line_angle / 180.0) * (SERVO_MAX_DUTY - SERVO_MIN_DUTY)
+    duty_cycle = max(SERVO_MIN_DUTY, min(SERVO_MAX_DUTY, duty_cycle))  # Clamp to valid range
     servo_pwm.ChangeDutyCycle(duty_cycle)
-    return duty_cycle
 
 # Initialize camera
 def setup_camera():
@@ -305,8 +286,6 @@ def calibrate_black_line(picam2, color_ranges):
 
 # Line detection function with top and bottom ROIs
 def detect_line(frame, color_priorities, color_ranges):
-    global integral, last_error
-    
     center_x = FRAME_WIDTH // 2
     cv2.line(frame, (center_x, 0), (center_x, FRAME_HEIGHT), (0, 0, 255), 2)
     
@@ -343,7 +322,7 @@ def detect_line(frame, color_priorities, color_ranges):
         for lower, upper in color_ranges_for_color:
             lower = np.array(lower, dtype=np.uint8)
             upper = np.array(upper, dtype=np.uint8)
-            bottom_color_mask = cv2.bitwise_or(bottom_color_mask, cv2.inRange(bottom_hsv, lower, upper))
+            bottom_color_mask = cv2.bitwise_or(bottom_color_mask, cv2.inRange(bottom_hsv, lower, upper -1, bottom_hsv, lower, upper))
             top_color_mask = cv2.bitwise_or(top_color_mask, cv2.inRange(top_hsv, lower, upper))
         
         kernel = np.ones((5, 5), np.uint8)
@@ -366,6 +345,7 @@ def detect_line(frame, color_priorities, color_ranges):
     
     for color_name in color_priorities:
         if color_name in valid_contours:
+            # Bottom ROI for PID
             if valid_contours[color_name]['bottom']:
                 largest_bottom_contour = max(valid_contours[color_name]['bottom'], key=cv2.contourArea)
                 area = cv2.contourArea(largest_bottom_contour)
@@ -374,6 +354,7 @@ def detect_line(frame, color_priorities, color_ranges):
                     bottom_best_contour = largest_bottom_contour
                     bottom_best_color = color_name
             
+            # Top ROI for angle
             if valid_contours[color_name]['top']:
                 largest_top_contour = max(valid_contours[color_name]['top'], key=cv2.contourArea)
                 area = cv2.contourArea(largest_top_contour)
@@ -412,14 +393,16 @@ def detect_line(frame, color_priorities, color_ranges):
     
     # Process top ROI for line angle
     if top_best_contour is not None:
+        # Fit a line to the contour
         [vx, vy, x0, y0] = cv2.fitLine(top_best_contour, cv2.DIST_L2, 0, 0.01, 0.01)
         line_angle = np.arctan2(vy, vx) * 180 / np.pi
-        line_angle = line_angle.item() % 180
+        line_angle = line_angle.item() % 180  # Extract scalar and normalize to 0-180 degrees
         
         contour_color = (0, 255, 0) if top_best_color != 'black' else (128, 128, 128)
         cv2.drawContours(frame[0:top_roi_y_end, 0:FRAME_WIDTH], 
                         [top_best_contour], -1, contour_color, 2)
         
+        # Draw fitted line
         left_y = int(y0 - (x0 * vy / vx))
         right_y = int(y0 + ((FRAME_WIDTH - x0) * vy / vx))
         cv2.line(frame, (0, left_y), (FRAME_WIDTH, right_y), (0, 0, 255), 2)
@@ -456,8 +439,6 @@ def main():
     
     print("Line follower with PID, angle detection, and servo control started. Press 'q' or Ctrl+C to stop.")
     
-    recovery_mode = False
-    
     try:
         while True:
             frame = picam2.capture_array()
@@ -471,44 +452,29 @@ def main():
             elif key == ord('c'):
                 calibrate_black_line(picam2, color_ranges)
             
-            # PID control
-            global integral, last_error
-            integral += error
-            derivative = error - last_error
-            correction = KP * error + KI * integral + KD * derivative
-            last_error = error
-            
-            # Control servo based on line angle
-            duty_cycle = set_servo_angle(servo_pwm, line_angle)
-            
+            # Control motors based on bottom ROI error
             if line_found:
-                recovery_mode = False
                 if error > TURN_THRESHOLD:
-                    pivot_right(right_pwm, left_pwm)
-                    print(f"Pivot Right - {detected_color} line, Error: {error}, Line Angle: {line_angle}, Servo Duty: {duty_cycle:.2f}")
+                    pivot_turn_right(right_pwm, left_pwm)
+                    print(f"Pivot Turning Right - {detected_color} line, Error: {error}")
                 elif error < -TURN_THRESHOLD:
-                    pivot_left(right_pwm, left_pwm)
-                    print(f"Pivot Left - {detected_color} line, Error: {error}, Line Angle: {line_angle}, Servo Duty: {duty_cycle:.2f}")
+                    pivot_turn_left(right_pwm, left_pwm)
+                    print(f"Pivot Turning Left - {detected_color} line, Error: {error}")
                 else:
-                    # Adjust motor speeds based on PID correction
-                    right_speed = BASE_SPEED - correction
-                    left_speed = BASE_SPEED + correction
-                    move_forward(right_pwm, left_pwm, right_speed, left_speed)
-                    print(f"Following - {detected_color} line, Error: {error}, Line Angle: {line_angle}, Servo Duty: {duty_cycle:.2f}, R:{right_speed:.1f}, L:{left_speed:.1f}")
+                    move_forward(right_pwm, left_pwm)
+                    print(f"Moving Forward - {detected_color} line, Error: {error}, Available: {', '.join(available_colors)}")
             else:
-                if not recovery_mode:
-                    print("No line detected. Starting recovery...")
-                    recovery_mode = True
-                move_backward(right_pwm, left_pwm, REVERSE_SPEED)
-                print(f"Reversing - No line, Servo Duty: {duty_cycle:.2f}")
-                time.sleep(0.1)
+                stop_motors(right_pwm, left_pwm)
+                print("No line detected. Stopping.")
+            
+            # Control servo based on top ROI line angle
+            set_servo_angle(servo_pwm, line_angle)
+            print(f"Servo Angle Set to {line_angle:.2f} degrees")
                 
     except KeyboardInterrupt:
         print("\nProgram stopped by user")
     finally:
         stop_motors(right_pwm, left_pwm)
-        servo_pwm.ChangeDutyCycle(SERVO_CENTER)  # Reset servo to center
-        time.sleep(0.1)
         servo_pwm.stop()
         cv2.destroyAllWindows()
         GPIO.cleanup()
