@@ -27,9 +27,6 @@ FRAME_WIDTH = 640          # Camera frame width
 FRAME_HEIGHT = 480         # Camera frame height
 TURN_THRESHOLD = 100       # Error threshold for pivoting
 REVERSE_SPEED = 40         # Speed when reversing
-SHAPE_ROI_WIDTH = 200      # Width of the ROI for shape detection (centered)
-ASPECT_RATIO_TOLERANCE = 0.2  # Tolerance for aspect ratio matching
-DEFAULT_SHAPE_ROI_HEIGHT = FRAME_HEIGHT // 2  # Default height if no line detected
 
 # Variables for encoder counts
 right_counter = 0
@@ -38,7 +35,7 @@ left_counter = 0
 # Calibration file
 CALIBRATION_FILE = "color_calibration.json"
 
-# Default color ranges (HSV format)
+# Default color ranges for line detection (HSV format)
 default_color_ranges = {
     'red': [
         ([0, 167, 154], [10, 247, 234]),    # Lower red range
@@ -56,6 +53,19 @@ default_color_ranges = {
     'black': [
         ([0, 0, 0], [179, 100, 75])         # Black range
     ]
+}
+
+# Define RGB color ranges for shape validation
+shape_color_ranges = {
+    'red': ([150, 0, 0], [255, 100, 100]),    # R: 150-255, G: 0-100, B: 0-100
+    'blue': ([0, 0, 150], [100, 100, 255]),   # R: 0-100, G: 0-100, B: 150-255
+    'green': ([0, 150, 0], [100, 255, 100]),  # R: 0-100, G: 150-255, B: 0-100
+}
+
+# Define expected shape-color mappings
+expected_shapes = {
+    'circle': 'red',    # Expect a red circle
+    'triangle': 'blue', # Expect a blue triangle
 }
 
 # Initialize Raspberry Pi Camera
@@ -141,7 +151,7 @@ def stop_motors(right_pwm, left_pwm):
     GPIO.output(IN3, GPIO.LOW)
     GPIO.output(IN4, GPIO.LOW)
 
-# Load calibrated color ranges
+# Load calibrated color ranges for line detection
 def load_color_calibration():
     if os.path.exists(CALIBRATION_FILE):
         try:
@@ -154,7 +164,7 @@ def load_color_calibration():
     print("Using default color ranges.")
     return default_color_ranges
 
-# Get user's color priority choice
+# Get user's color priority choice for line following
 def get_color_choices():
     print("\nAvailable line colors to follow (priority order):")
     print("r = red (highest priority)")
@@ -179,74 +189,6 @@ def get_color_choices():
             return selected_colors
         print("Invalid choice. Please try again.")
 
-# Preprocess and store reference images and shapes
-def preprocess_reference_data():
-    reference_data = {}
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    
-    for filename in os.listdir(script_dir):
-        if filename.endswith(('.png', '.jpg', '.jpeg')):
-            img_path = os.path.join(script_dir, filename)
-            img = cv2.imread(img_path)
-            if img is None:
-                continue
-                
-            # Preprocess image
-            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-            _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            edges = cv2.Canny(thresh, 30, 200)
-            kernel = np.ones((3,3), np.uint8)
-            edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
-            contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            if not contours:
-                continue
-                
-            # Get largest contour
-            main_contour = max(contours, key=cv2.contourArea)
-            if cv2.contourArea(main_contour) < 500:
-                continue
-                
-            # Calculate aspect ratio
-            x, y, w, h = cv2.boundingRect(main_contour)
-            aspect_ratio = float(w) / h if h != 0 else float('inf')
-            
-            # Create mask for color histogram
-            mask = np.zeros(img.shape[:2], dtype=np.uint8)
-            cv2.drawContours(mask, [main_contour], -1, 255, -1)
-            
-            # Calculate color histogram in HSV
-            hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-            hist = cv2.calcHist([hsv], [0, 1, 2], mask, [8, 8, 8], [0, 180, 0, 256, 0, 256])
-            cv2.normalize(hist, hist)
-            
-            # Store contour, histogram, and aspect ratio
-            reference_data[filename] = {
-                'contour': main_contour,
-                'color_hist': hist,
-                'image': img,
-                'aspect_ratio': aspect_ratio
-            }
-    
-    return reference_data
-
-# Compare contours using Hu Moments
-def compare_contours(c1, c2):
-    if c1 is None or c2 is None:
-        return float('inf')
-    m1 = cv2.moments(c1)
-    m2 = cv2.moments(c2)
-    if m1['m00'] == 0 or m2['m00'] == 0:
-        return float('inf')
-    hu1 = cv2.HuMoments(m1)
-    hu2 = cv2.HuMoments(m2)
-    return cv2.matchShapes(c1, c2, cv2.CONTOURS_MATCH_I1, 0)
-
-# Compare color histograms
-def compare_color_histograms(hist1, hist2):
-    return cv2.compareHist(hist1, hist2, cv2.HISTCMP_CHISQR)
-
 # Check if contour is complete (not touching frame edges)
 def is_contour_complete(contour, frame_width, frame_height, margin=5):
     x, y, w, h = cv2.boundingRect(contour)
@@ -255,14 +197,13 @@ def is_contour_complete(contour, frame_width, frame_height, margin=5):
             x + w < frame_width - margin and
             y + h < frame_height - margin)
 
-# Line Detection Function (No ROI)
-# Line Detection Function (No ROI)
+# Line Detection Function
 def detect_line(frame, color_priorities, color_ranges):
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     center_x = FRAME_WIDTH // 2
     cv2.line(frame, (center_x, 0), (center_x, FRAME_HEIGHT), (0, 0, 255), 2)
     
-    # Preprocess for contour detection
+    # Preprocess for contour detection (Line Threshold)
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
@@ -355,23 +296,47 @@ def detect_line(frame, color_priorities, color_ranges):
             return error, True, best_color, all_available_colors, frame, line_y_top, line_y_bottom, thresh
     return 0, False, None, [], frame, line_y_top, line_y_bottom, thresh
 
+# Detect the shape type based on contour approximation
+def detect_shape(contour):
+    peri = cv2.arcLength(contour, True)
+    approx = cv2.approxPolyDP(contour, 0.04 * peri, True)
+    num_sides = len(approx)
+    
+    if num_sides == 3:
+        return "triangle"
+    elif num_sides >= 8:  # Circles have many sides when approximated
+        area = cv2.contourArea(contour)
+        (x, y), radius = cv2.minEnclosingCircle(contour)
+        circle_area = np.pi * (radius ** 2)
+        if area / circle_area > 0.8:  # Check if contour is close to a circle
+            return "circle"
+    return None
 
-# Combined Detection and Line Following with Contour and Color Validation
-# Combined Detection and Line Following with Contour and Color Validation
-# Combined Detection and Line Following with Contour and Color Validation
-# Combined Detection and Line Following with Contour and Color Validation
+# Detect the color within a contour in the RGB frame
+def detect_color_in_contour(frame, contour):
+    mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+    cv2.drawContours(mask, [contour], -1, 255, -1)
+    mean_rgb = cv2.mean(frame, mask=mask)[:3]  # Get mean RGB values (B, G, R)
+    mean_rgb = np.array(mean_rgb)  # [B, G, R]
+    
+    for color_name, (lower, upper) in shape_color_ranges.items():
+        lower = np.array(lower)
+        upper = np.array(upper)
+        if (lower <= mean_rgb).all() and (mean_rgb <= upper).all():
+            return color_name
+    return None
 
-# Combined Detection and Line Following with Contour and Color Validation
-def detect_images_shapes_and_line(frame, prev_detections, reference_data, color_priorities, color_ranges, right_pwm, left_pwm, pause_state, max_len=5):
-    # Line detection
+# Combined Detection and Line Following with New Shape Detection
+def detect_images_shapes_and_line(frame, prev_detections, color_priorities, color_ranges, right_pwm, left_pwm, pause_state, max_len=5):
+    # Line detection (includes preprocessing for Line Threshold)
     error, line_found, detected_color, available_colors, _, line_y_top, line_y_bottom, thresh = detect_line(frame, color_priorities, color_ranges)
     
     detected_name = None
     label = "Detected: None"
     
-    # Only perform shape/image detection if line is found
+    # Only perform shape detection if line is found
     if line_found:
-        # Create a mask to exclude the line region from the threshold image
+        # Create a copy of the threshold image and exclude the line region
         shape_thresh = thresh.copy()
         shape_thresh[line_y_top:line_y_bottom, :] = 0  # Set the line region to black
         
@@ -382,18 +347,18 @@ def detect_images_shapes_and_line(frame, prev_detections, reference_data, color_
         # Find contours in the modified threshold image
         contours, _ = cv2.findContours(shape_thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-        # Create an image to show all shape contours (full frame, no quadrants)
+        # Create an image to show all shape contours
         shape_contour_display = np.zeros((FRAME_HEIGHT, FRAME_WIDTH, 3), dtype=np.uint8)
         for contour in contours:
             if cv2.contourArea(contour) >= 500:
                 cv2.drawContours(shape_contour_display, [contour], -1, (0, 255, 0), 2)
         cv2.imshow("Shape Contours", shape_contour_display)
         
-        best_match = None
-        best_score = float('inf')
         best_contour = None
+        best_shape = None
+        best_color = None
         
-        # Compare contours with reference data
+        # Process each contour
         for contour in contours:
             if cv2.contourArea(contour) < 500:
                 continue
@@ -402,57 +367,42 @@ def detect_images_shapes_and_line(frame, prev_detections, reference_data, color_
             if not is_contour_complete(contour, FRAME_WIDTH, FRAME_HEIGHT):
                 continue
                 
-            # Calculate aspect ratio
-            x, y, w, h = cv2.boundingRect(contour)
-            aspect_ratio = float(w) / h if h != 0 else float('inf')
-            
-            for name, data in reference_data.items():
-                # Check aspect ratio
-                ref_aspect_ratio = data['aspect_ratio']
-                if abs(aspect_ratio - ref_aspect_ratio) / ref_aspect_ratio > ASPECT_RATIO_TOLERANCE:
-                    continue
+            # Detect the shape type
+            shape_type = detect_shape(contour)
+            if shape_type is None:
+                continue
                 
-                score = compare_contours(contour, data['contour'])
-                if score < best_score and score < 0.5:  # Threshold for contour similarity
-                    best_score = score
-                    best_match = name
-                    best_contour = contour
+            # Detect the color within the contour in the RGB frame
+            color = detect_color_in_contour(frame, contour)
+            if color is None:
+                continue
+                
+            # Validate the shape-color combination
+            expected_color = expected_shapes.get(shape_type)
+            if expected_color == color:
+                best_contour = contour
+                best_shape = shape_type
+                best_color = color
+                break
         
-        # Show best contour even if color validation fails (for debugging)
+        # If a valid shape is detected, overlay it on the RGB frame
         if best_contour is not None:
+            # Draw the contour on the RGB frame
+            cv2.drawContours(frame, [best_contour], -1, (0, 255, 0), 2)
+            # Calculate bounding box for text
+            x, y, w, h = cv2.boundingRect(best_contour)
+            detected_name = f"{best_color.capitalize()} {best_shape.capitalize()}"
+            cv2.putText(frame, detected_name, (x, y - 10), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+            label = f"Detected: {detected_name}"
+            print(f"Detected {detected_name}")
+            
+            # Show best shape contour separately
             best_shape_contour_display = np.zeros((FRAME_HEIGHT, FRAME_WIDTH, 3), dtype=np.uint8)
             cv2.drawContours(best_shape_contour_display, [best_contour], -1, (0, 255, 0), 2)
             cv2.imshow("Best Shape Contour", best_shape_contour_display)
-        
-        # Validate color if we have a contour match
-        if best_match and best_contour is not None:
-            # Create mask for current contour using the full frame
-            mask = np.zeros(frame.shape[:2], dtype=np.uint8)
-            cv2.drawContours(mask, [best_contour], -1, 255, -1)
-            
-            # Calculate color histogram for current contour
-            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-            hist = cv2.calcHist([hsv], [0, 1, 2], mask, [8, 8, 8], [0, 180, 0, 256, 0, 256])
-            cv2.normalize(hist, hist)
-            
-            # Compare with reference histogram
-            color_score = compare_color_histograms(hist, reference_data[best_match]['color_hist'])
-            
-            # Validate match based on color similarity (increased threshold)
-            if color_score < 100:  # Increased threshold for color histogram similarity
-                detected_name = best_match
-                # Draw contour on the frame
-                cv2.drawContours(frame, [best_contour], -1, (0, 255, 0), 2)
-                # Calculate bounding box for text
-                x, y, w, h = cv2.boundingRect(best_contour)
-                cv2.putText(frame, detected_name, (x, y - 10), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-                label = f"Detected: {detected_name}"
-                print(f"Confirmed {detected_name} with contour score: {best_score:.3f}, color score: {color_score:.3f}")
-            else:
-                print(f"Color validation failed for {best_match}. Score: {color_score:.3f}, Contour score: {best_score:.3f}")
-                detected_name = None
-                label = "Detected: None"
+        else:
+            print("No valid shape-color combination detected.")
     
     # Update detection history
     prev_detections.append(detected_name)
@@ -525,12 +475,10 @@ def main():
         GPIO.cleanup()
         return
     
-    reference_data = preprocess_reference_data()
     prev_detections = deque()
-    
     pause_state = {'active': False, 'start_time': 0, 'detected_object': None}
     
-    print("Combined image/shape detection and line follower started. Press 'q' to stop.")
+    print("Combined shape detection and line follower started. Press 'q' to stop.")
     try:
         while True:
             frame = picam2.capture_array()
@@ -543,7 +491,7 @@ def main():
                 display_frame = frame.copy()
             
             output_frame, detected_name, error, line_found, detected_color, available_colors, pause_state = detect_images_shapes_and_line(
-                display_frame, prev_detections, reference_data, color_priorities, color_ranges, right_pwm, left_pwm, pause_state)
+                display_frame, prev_detections, color_priorities, color_ranges, right_pwm, left_pwm, pause_state)
             
             cv2.imshow("Combined Detection and Line Follower", output_frame)
             key = cv2.waitKey(1) & 0xFF
