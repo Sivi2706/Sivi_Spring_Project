@@ -265,6 +265,7 @@ def match_image(frame, reference_images, orb):
         print(f"{name}: {count} matches")
     return best_match
 
+# Symbol Detection Functions
 def detect_shapes(frame):
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
@@ -275,9 +276,10 @@ def detect_shapes(frame):
     contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     shape_detected = None
     symbol_mask = np.zeros_like(gray)
+    shape_outline_mask = np.zeros_like(gray)  # New binary mask for shape outline
     
     for contour in contours:
-        if cv2.contourArea(contour) < 1000:  # Increased threshold
+        if cv2.contourArea(contour) < 1000:
             continue
         epsilon = 0.01 * cv2.arcLength(contour, True)
         approx = cv2.approxPolyDP(contour, epsilon, True)
@@ -337,6 +339,7 @@ def detect_shapes(frame):
                                     elif 135 <= angle <= 225:
                                         shape_detected = "Left"
                             cv2.drawContours(frame, [approx], -1, (0, 255, 0), 2)
+                            cv2.drawContours(shape_outline_mask, [approx], -1, 255, 2)  # Draw outline on binary mask
                             cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 0, 0), 2)
                             cv2.putText(frame, shape_detected, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
                             cv2.drawContours(symbol_mask, [approx], -1, 255, -1)
@@ -344,8 +347,30 @@ def detect_shapes(frame):
             except cv2.error as e:
                 print(f"Convexity defect calculation skipped: {e}")
     
-    return shape_detected, symbol_mask
+    return shape_detected, symbol_mask, shape_outline_mask  # Return the new binary mask
 
+def detect_images(frame, prev_detections, reference_images, orb, max_len=10):
+    if reference_images:
+        match_name = match_image(frame, reference_images, orb)
+    else:
+        match_name = None
+    shape_detected, symbol_mask, shape_outline_mask = None, np.zeros_like(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)), np.zeros_like(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
+    if not match_name:
+        shape_detected, symbol_mask, shape_outline_mask = detect_shapes(frame)
+    current_detection = match_name if match_name else shape_detected
+    prev_detections.append(current_detection)
+    if len(prev_detections) > max_len:
+        prev_detections.popleft()
+    valid_detections = [d for d in prev_detections if d is not None]
+    detected_name = None
+    if valid_detections and valid_detections.count(valid_detections[0]) >= 3:
+        detected_name = max(set(valid_detections), key=valid_detections.count)
+        label = f"Symbol: {detected_name}"
+    else:
+        label = "Symbol: None"
+    cv2.rectangle(frame, (5, 120), (250, 150), (0, 0, 0), -1)
+    cv2.putText(frame, label, (10, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+    return frame, detected_name, symbol_mask, shape_outline_mask  # Return the new binary mask
 def detect_images(frame, prev_detections, reference_images, orb, max_len=10):
     if reference_images:
         match_name = match_image(frame, reference_images, orb)
@@ -642,11 +667,12 @@ def main():
             
             if frame_count % symbol_skip == 0:
                 symbol_roi = frame[0:SYMBOL_ROI_HEIGHT, 0:FRAME_WIDTH]
-                output_frame, detected_symbol, symbol_mask = detect_images(symbol_roi, prev_detections, reference_images, orb)
+                output_frame, detected_symbol, symbol_mask, shape_outline_mask = detect_images(symbol_roi, prev_detections, reference_images, orb)
                 frame[0:SYMBOL_ROI_HEIGHT, 0:FRAME_WIDTH] = output_frame
                 last_announced = announce_symbol(detected_symbol, last_announced)
             else:
                 symbol_mask = np.zeros((SYMBOL_ROI_HEIGHT, FRAME_WIDTH), dtype=np.uint8)
+                shape_outline_mask = np.zeros((SYMBOL_ROI_HEIGHT, FRAME_WIDTH), dtype=np.uint8)
             frame_count += 1
             
             cv2.imshow("Line Follower", frame)
@@ -654,6 +680,8 @@ def main():
             cv2.imshow("Debug Mask", debug_mask_colored)
             symbol_mask_colored = cv2.cvtColor(symbol_mask, cv2.COLOR_GRAY2BGR)
             cv2.imshow("Symbol Mask", symbol_mask_colored)
+            shape_outline_mask_colored = cv2.cvtColor(shape_outline_mask, cv2.COLOR_GRAY2BGR)
+            cv2.imshow("Shape Outline Mask", shape_outline_mask_colored)  # New window for shape outline
             
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
@@ -695,6 +723,6 @@ def main():
         picam2.stop()
         GPIO.cleanup()
         print("Resources released")
-        
+
 if __name__ == "__main__":
     main()
