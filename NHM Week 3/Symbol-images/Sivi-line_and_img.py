@@ -374,6 +374,10 @@ def detect_line(frame, color_priorities, color_ranges):
             return error, True, best_color, all_available_colors
     return 0, False, None, []
 
+# Check if a shape or image is recognizable (not Unknown)
+def is_valid_detection(detection):
+    return detection is not None and detection != "Unknown"
+
 # Combined Image and Shape Detection with Line Following
 def detect_images_shapes_and_line(frame, prev_detections, reference_images, orb, color_priorities, color_ranges, right_pwm, left_pwm, pause_state, max_len=5):
     match_name, orientation = match_image(frame, reference_images, orb)
@@ -386,7 +390,7 @@ def detect_images_shapes_and_line(frame, prev_detections, reference_images, orb,
     if len(prev_detections) > max_len:
         prev_detections.popleft()
     
-    valid_detections = [d for d in prev_detections if d is not None]
+    valid_detections = [d for d in prev_detections if is_valid_detection(d)]
     detected_name = None
     label = "Detected: None"
     
@@ -406,20 +410,25 @@ def detect_images_shapes_and_line(frame, prev_detections, reference_images, orb,
     # Line following logic
     error, line_found, detected_color, available_colors = detect_line(frame, color_priorities, color_ranges)
     
-    # Check if we need to enter pause state
-    if (shape_detected or match_name) and not pause_state['active']:
-        pause_state['active'] = True
-        pause_state['start_time'] = time.time()
-        pause_state['detected_object'] = detected_name
-        stop_motors(right_pwm, left_pwm)
-        print(f"{'Shape' if shape_detected else 'Image'} detected: {detected_name}. Pausing for 5 seconds.")
-        
-        # Display timer on frame
-        cv2.rectangle(frame, (5, 45), (400, 85), (0, 0, 0), -1)
-        cv2.putText(frame, "Paused: 5.0s remaining", (10, 75), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-        
-        return frame, detected_name, error, line_found, detected_color, available_colors, pause_state
+    # Check if we need to enter pause state - only for confirmed shapes/images (not Unknown)
+    should_pause = False
+    if detected_name and not pause_state['active']:
+        # Only pause if we have a valid shape or image (not "Unknown")
+        if is_valid_detection(detected_name):
+            should_pause = True
+            pause_state['active'] = True
+            pause_state['start_time'] = time.time()
+            pause_state['detected_object'] = detected_name
+            stop_motors(right_pwm, left_pwm)
+            print(f"Confirmed detection: {detected_name}. Pausing for 5 seconds.")
+            
+            # Display timer on frame
+            cv2.rectangle(frame, (5, 45), (400, 85), (0, 0, 0), -1)
+            cv2.putText(frame, "Paused: 5.0s remaining", (10, 75), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+        else:
+            # If detected as "Unknown", log it but keep moving
+            print(f"Ignoring unconfirmed shape detection: {detected_name}")
     
     # Check if we're in pause state
     if pause_state['active']:
@@ -435,10 +444,6 @@ def detect_images_shapes_and_line(frame, prev_detections, reference_images, orb,
         if remaining <= 0:
             pause_state['active'] = False
             print(f"Resume line following after {pause_state['detected_object']} detection")
-            
-            # Add some forward movement to get past the image/shape
-            move_forward(right_pwm, left_pwm)
-            # No sleep here to keep display responsive
     
     # Only do line following if not in pause state
     if not pause_state['active']:
