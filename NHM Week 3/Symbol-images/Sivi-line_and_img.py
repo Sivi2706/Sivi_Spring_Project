@@ -195,6 +195,7 @@ def load_reference_images():
     return reference_images, orb
 
 # ORB Feature Matching with Orientation Detection
+# ORB Feature Matching with Orientation Detection
 def match_image(frame, reference_images, orb):
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     keypoints, descriptors = orb.detectAndCompute(gray, None)
@@ -205,22 +206,41 @@ def match_image(frame, reference_images, orb):
     best_match = None
     best_matches = None
     best_ref_keypoints = None
+    
+    # Increase this threshold to require more matching features
+    min_match_threshold = 50  # Increased from 30
+    
     for name, (ref_keypoints, ref_descriptors, ref_img) in reference_images.items():
         matches = bf.match(descriptors, ref_descriptors)
         matches_dict[name] = len(matches)
-        if len(matches) > 30:
+        # Only consider matches above our higher threshold
+        if len(matches) > min_match_threshold:
             matches = sorted(matches, key=lambda x: x.distance)
+            # Reject matches with average distance above threshold
+            avg_distance = sum(m.distance for m in matches[:20]) / min(20, len(matches))
+            if avg_distance > 40:  # Lower values are better matches
+                continue
+                
             if not best_match or len(matches) > matches_dict[best_match]:
                 best_match = name
                 best_matches = matches[:10]
                 best_ref_keypoints = ref_keypoints
+    
     print("\nMatch Results:")
     for name, count in sorted(matches_dict.items(), key=lambda x: x[1], reverse=True):
         print(f"{name}: {count} matches")
+    
     if best_match:
+        # Additional verification for homography quality
         src_pts = np.float32([keypoints[m.queryIdx].pt for m in best_matches]).reshape(-1, 1, 2)
         dst_pts = np.float32([best_ref_keypoints[m.trainIdx].pt for m in best_matches]).reshape(-1, 1, 2)
-        M, _ = cv2.findHomography(dst_pts, src_pts, cv2.RANSAC, 5.0)
+        M, mask = cv2.findHomography(dst_pts, src_pts, cv2.RANSAC, 5.0)
+        
+        # Check if we have enough inliers after RANSAC (good matches)
+        inlier_count = np.sum(mask) if mask is not None else 0
+        if inlier_count < 7:  # Require at least 7 good matches
+            return None, None
+            
         if M is not None:
             h, w = reference_images[best_match][2].shape
             ref_center = (w // 2, h // 2)
@@ -232,6 +252,7 @@ def match_image(frame, reference_images, orb):
             angle = np.degrees(np.arctan2(dy, dx)) % 360
             return best_match, (center, tip, angle)
     return None, None
+
 
 # Improved Shape Detection Function
 def detect_shapes(frame):
