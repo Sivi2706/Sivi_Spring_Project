@@ -10,7 +10,6 @@ from picamera2 import Picamera2
 IN1, IN2 = 22, 27         # Left motor control
 IN3, IN4 = 17, 4          # Right motor control
 ENA, ENB = 13, 12         # PWM pins for motors
-SERVO_PIN = 18            # Servo motor pin
 encoderPinRight = 23      # Right encoder
 encoderPinLeft = 24       # Left encoder
 
@@ -35,8 +34,6 @@ ROI_HEIGHT = 150           # Height of the ROI from the bottom of the frame
 
 # PWM settings
 PWM_FREQ = 1000           # Motor PWM frequency
-SERVO_FREQ = 50           # Servo PWM frequency
-SERVO_NEUTRAL = 7.5       # Neutral position (90 degrees, 7.5% duty cycle)
 
 # Variables to store encoder counts
 right_counter = 0
@@ -167,8 +164,8 @@ def setup_gpio():
     GPIO.setmode(GPIO.BCM)
     GPIO.setwarnings(False)
 
-    # Setup motor, encoder, and servo pins
-    GPIO.setup([IN1, IN2, IN3, IN4, ENA, ENB, SERVO_PIN], GPIO.OUT)
+    # Setup motor and encoder pins
+    GPIO.setup([IN1, IN2, IN3, IN4, ENA, ENB], GPIO.OUT)
     GPIO.setup(encoderPinRight, GPIO.IN, pull_up_down=GPIO.PUD_UP)
     GPIO.setup(encoderPinLeft, GPIO.IN, pull_up_down=GPIO.PUD_UP)
     
@@ -182,11 +179,7 @@ def setup_gpio():
     right_pwm.start(0)
     left_pwm.start(0)
 
-    # Setup servo PWM
-    servo_pwm = GPIO.PWM(SERVO_PIN, SERVO_FREQ)
-    servo_pwm.start(SERVO_NEUTRAL)  # Start at neutral
-
-    return right_pwm, left_pwm, servo_pwm
+    return right_pwm, left_pwm
 
 # Motor control functions
 def move_forward(right_pwm, left_pwm):
@@ -233,15 +226,13 @@ def turn_left(right_pwm, left_pwm):
     time.sleep(RUN_DURATION)
     stop_motors(right_pwm, left_pwm)
 
-def stop_motors(right_pwm, left_pwm, servo_pwm=None):
+def stop_motors(right_pwm, left_pwm):
     right_pwm.ChangeDutyCycle(0)
     left_pwm.ChangeDutyCycle(0)
     GPIO.output(IN1, GPIO.LOW)
     GPIO.output(IN2, GPIO.LOW)
     GPIO.output(IN3, GPIO.LOW)
     GPIO.output(IN4, GPIO.LOW)
-    if servo_pwm:
-        servo_pwm.ChangeDutyCycle(SERVO_NEUTRAL)
     print("Stopped")
 
 # Function to calibrate a specific color and record HSV values
@@ -459,7 +450,7 @@ def detect_line(frame, color_priorities, color_ranges):
 
 # Main function
 def main():
-    right_pwm, left_pwm, servo_pwm = setup_gpio()
+    right_pwm, left_pwm = setup_gpio()
     picam2 = initialize_camera()
     if picam2 is None:
         print("Exiting program. Camera could not be initialized.")
@@ -530,10 +521,9 @@ def main():
     except KeyboardInterrupt:
         print("\nProgram stopped by user")
     finally:
-        stop_motors(right_pwm, left_pwm, servo_pwm)
+        stop_motors(right_pwm, left_pwm)
         right_pwm.stop()
         left_pwm.stop()
-        servo_pwm.stop()
         cv2.destroyAllWindows()
         picam2.stop()
         GPIO.cleanup()
