@@ -20,14 +20,14 @@ def initialize_camera():
 # Load and preprocess reference images with enhanced ORB features
 def load_reference_images():
     reference_images = {}
-    orb = cv2.ORB_create(nfeatures=1500)  # Increased for better feature capture
+    orb = cv2.ORB_create(nfeatures=1000)  # Reduced for performance
     script_dir = os.path.dirname(os.path.abspath(__file__))
     for filename in os.listdir(script_dir):
         if filename.endswith(('.png', '.jpg', '.jpeg')):
             img_path = os.path.join(script_dir, filename)
             img = cv2.imread(img_path, 0)
             if img is None:
-                print(f"Failed to load reference image: {filename}")
+                print(f"Error: Could not load {filename}. Skipping.")
                 continue
             img = cv2.resize(img, (640, 480), interpolation=cv2.INTER_AREA)
             keypoints, descriptors = orb.detectAndCompute(img, None)
@@ -82,14 +82,14 @@ def validate_orientation(frame):
     return None, 0.0
 
 # Enhanced ORB feature matching with orientation validation
-def match_image(frame, orb, reference_images, svm_clf):
+def match_image(frame, orb, reference_images, svm_clf, is_live_feed=False):
     frame_rgb = frame.copy()
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     gray = cv2.GaussianBlur(gray, (5, 5), 0)
     frame_keypoints, descriptors = orb.detectAndCompute(gray, None)
     if descriptors is None:
         print("No descriptors detected in frame.")
-        return None, None, gray, None, 0, None, None, frame_keypoints, 0.0
+        return None, None, gray, None, 0, None, None, frame_keypoints, 0.0, None
     matches_dict = {}
     bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
     best_match = None
@@ -147,6 +147,7 @@ def match_image(frame, orb, reference_images, svm_clf):
         elif "stop" in supposed_match.lower():
             confidence = max(confidence, svm_pred[2])
             print(f"SVM stop sign probability: {svm_pred[2]:.2f}")
+    match_img = None
     if best_match and best_matches:
         src_pts = np.float32([frame_keypoints[m.queryIdx].pt for m in best_matches]).reshape(-1, 1, 2)
         dst_pts = np.float32([best_ref_keypoints[m.trainIdx].pt for m in best_matches]).reshape(-1, 1, 2)
@@ -166,9 +167,38 @@ def match_image(frame, orb, reference_images, svm_clf):
                 frame = cv2.warpAffine(frame, rotation_matrix, (w, h))
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 frame_keypoints, descriptors = orb.detectAndCompute(gray, None)
+                # Recompute matches for stop sign after rotation
+                if descriptors is not None and supposed_match:
+                    ref_descriptors = reference_images[supposed_match][1]
+                    matches = bf.match(descriptors, ref_descriptors)
+                    supposed_matches_list = matches[:30]  # Update matches
+                    supposed_keypoints = reference_images[supposed_match][0]
+                    supposed_match_count = len(matches)
+                else:
+                    supposed_matches_list = []
+                    supposed_match_count = 0
                 print(f"Normalized angle to 0° from {angle:.1f}°")
-            return best_match, (center, tip, angle), gray, supposed_match, supposed_match_count, supposed_matches_list, supposed_keypoints, frame_keypoints, confidence
-    return None, None, gray, supposed_match, supposed_match_count, supposed_matches_list, supposed_keypoints, frame_keypoints, confidence
+            # Generate match image for live feed
+            if is_live_feed and supposed_match and supposed_match_count > 0 and frame_keypoints and supposed_keypoints:
+                ref_img = reference_images[supposed_match][2]
+                try:
+                    match_img = cv2.drawMatches(gray, frame_keypoints, ref_img, supposed_keypoints, 
+                                               supposed_matches_list[:30], None, flags=2)
+                    cv2.putText(match_img, f"Supposed Match: {supposed_match}", (10, 30), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                    cv2.putText(match_img, f"Matches: {supposed_match_count}", (10, 60), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                    cv2.putText(match_img, f"Confidence: {confidence:.2f}", (10, 90), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                    if "arrow" in supposed_match.lower():
+                        direction, _ = validate_orientation(frame)
+                        cv2.putText(match_img, f"Direction: {direction or 'Unknown'}", (10, 120), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                except cv2.error as e:
+                    print(f"Error in drawMatches: {e}")
+                    match_img = None
+            return best_match, (center, tip, angle), gray, supposed_match, supposed_match_count, supposed_matches_list, supposed_keypoints, frame_keypoints, confidence, match_img
+    return None, None, gray, supposed_match, supposed_match_count, supposed_matches_list, supposed_keypoints, frame_keypoints, confidence, match_img
 
 # Shape detection with enhanced preprocessing
 def detect_shapes(frame, gray):
@@ -203,15 +233,21 @@ def detect_shapes(frame, gray):
 
 # Process frame with multi-frame consistency
 def process_frame(frame, prev_detections, orb, reference_images, svm_clf, max_len=5, is_live_feed=False):
+    if frame is None or frame.size == 0:
+        print("Error: Invalid frame captured.")
+        return None, None, None, None, None, None
     if len(frame.shape) == 2:
         frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
     elif frame.shape[2] == 4:
         frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
     frame = cv2.resize(frame, (640, 480), interpolation=cv2.INTER_AREA)
-    match_name, orientation, gray, supposed_match, supposed_match_count, supposed_matches_list, supposed_keypoints, frame_keypoints, confidence = match_image(frame, orb, reference_images, svm_clf)
-    shape_detected, blurred, thresh, edges = (None, gray, None, None)
+    match_name, orientation, gray, supposed_match, supposed_match_count, supposed_matches_list, supposed_keypoints, frame_keypoints, confidence, match_img = match_image(frame, orb, reference_images, svm_clf, is_live_feed)
+    shape_detected, blurred, thresh, edges = (None, gray, gray.copy(), None)  # Initialize thresh as gray copy
     if not match_name:
+        print("No match found, running shape detection.")
         shape_detected, blurred, thresh, edges = detect_shapes(frame.copy(), gray)
+    else:
+        print(f"Match found: {match_name}, skipping shape detection.")
     current_detection = (match_name or shape_detected, confidence)
     prev_detections.append(current_detection)
     if len(prev_detections) > max_len:
@@ -231,15 +267,7 @@ def process_frame(frame, prev_detections, orb, reference_images, svm_clf, max_le
         cv2.arrowedLine(frame, (int(center[0]), int(center[1])), 
                         (int(tip[0]), int(tip[1])), (0, 255, 0), 2, tipLength=0.3)
         print(f"Orientation Detected: {angle:.1f} degrees")
-    if is_live_feed and supposed_match and supposed_match_count > 0:
-        ref_img = reference_images[supposed_match][2]
-        match_img = cv2.drawMatches(gray, frame_keypoints, ref_img, supposed_keypoints, supposed_matches_list[:30], None, flags=2)
-        cv2.putText(match_img, f"Supposed Match: {supposed_match}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        cv2.putText(match_img, f"Matches: {supposed_match_count}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        cv2.putText(match_img, f"Confidence: {confidence:.2f}", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        if "arrow" in supposed_match.lower():
-            direction, _ = validate_orientation(frame)
-            cv2.putText(match_img, f"Direction: {direction or 'Unknown'}", (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+    if is_live_feed and match_img is not None:
         cv2.imshow("Matching Debug", match_img)
     cv2.rectangle(frame, (5, 5), (400, 40), (0, 0, 0), -1)
     cv2.putText(frame, label, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
@@ -267,11 +295,20 @@ def process_sample_images(reference_images, orb, svm_clf):
                     print(f"Failed to load image: {image_files[idx]}")
                     continue
                 output_frame, detected_name, gray, blurred, thresh, edges = process_frame(frame, prev_detections, orb, reference_images, svm_clf)
+                if output_frame is None:
+                    print(f"Failed to process image: {image_files[idx]}")
+                    continue
                 cv2.imshow("Processed Image", output_frame)
                 cv2.imshow("Grayscale", gray)
                 cv2.imshow("Blurred", blurred)
-                cv2.imshow("Threshold", thresh)
-                cv2.imshow("Edges", edges)
+                if thresh is not None:
+                    cv2.imshow("Threshold", thresh)
+                else:
+                    print("Warning: Threshold image not generated.")
+                if edges is not None:
+                    cv2.imshow("Edges", edges)
+                else:
+                    print("Warning: Edges image not generated.")
                 print(f"Processing {image_files[idx]}: {detected_name or 'None'}")
                 cv2.waitKey(0)
                 cv2.destroyAllWindows()
@@ -285,12 +322,24 @@ def process_live_feed(picam2, reference_images, orb, svm_clf, live_feed_enabled)
     prev_detections = deque()
     while live_feed_enabled[0]:
         frame = picam2.capture_array()
+        if frame is None or frame.size == 0:
+            print("Error: Invalid frame captured from camera.")
+            continue
         output_frame, detected_name, gray, blurred, thresh, edges = process_frame(frame, prev_detections, orb, reference_images, svm_clf, is_live_feed=True)
+        if output_frame is None:
+            print("Error: Failed to process frame.")
+            continue
         cv2.imshow("Live Feed", output_frame)
         cv2.imshow("Grayscale", gray)
         cv2.imshow("Blurred", blurred)
-        cv2.imshow("Threshold", thresh)
-        cv2.imshow("Edges", edges)
+        if thresh is not None:
+            cv2.imshow("Threshold", thresh)
+        else:
+            print("Warning: Threshold image not generated.")
+        if edges is not None:
+            cv2.imshow("Edges", edges)
+        else:
+            print("Warning: Edges image not generated.")
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
             live_feed_enabled[0] = False
