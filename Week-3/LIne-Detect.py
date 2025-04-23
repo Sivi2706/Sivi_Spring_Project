@@ -165,47 +165,6 @@ def setup_gpio():
     
     return right_pwm, left_pwm
 
-# Motor control functions
-def pivot_turn_right(right_pwm, left_pwm):
-    GPIO.output(IN1, GPIO.HIGH)   # Left forward
-    GPIO.output(IN2, GPIO.LOW)
-    GPIO.output(IN3, GPIO.HIGH)   # Right backward
-    GPIO.output(IN4, GPIO.LOW)
-    right_pwm.ChangeDutyCycle(TURN_SPEED)
-    left_pwm.ChangeDutyCycle(TURN_SPEED)
-
-def pivot_turn_left(right_pwm, left_pwm):
-    GPIO.output(IN1, GPIO.LOW)    # Left backward
-    GPIO.output(IN2, GPIO.HIGH)
-    GPIO.output(IN3, GPIO.LOW)    # Right forward
-    GPIO.output(IN4, GPIO.HIGH)
-    right_pwm.ChangeDutyCycle(TURN_SPEED)
-    left_pwm.ChangeDutyCycle(TURN_SPEED)
-
-def move_forward(right_pwm, left_pwm):
-    GPIO.output(IN1, GPIO.HIGH)
-    GPIO.output(IN2, GPIO.LOW)
-    GPIO.output(IN3, GPIO.LOW)
-    GPIO.output(IN4, GPIO.HIGH)
-    right_pwm.ChangeDutyCycle(BASE_SPEED)
-    left_pwm.ChangeDutyCycle(BASE_SPEED)
-
-def move_backward(right_pwm, left_pwm, speed):
-    GPIO.output(IN1, GPIO.LOW)
-    GPIO.output(IN2, GPIO.HIGH)
-    GPIO.output(IN3, GPIO.HIGH)
-    GPIO.output(IN4, GPIO.LOW)
-    right_pwm.ChangeDutyCycle(speed)
-    left_pwm.ChangeDutyCycle(speed)
-
-def stop_motors(right_pwm, left_pwm):
-    right_pwm.ChangeDutyCycle(0)
-    left_pwm.ChangeDutyCycle(0)
-    GPIO.output(IN1, GPIO.LOW)
-    GPIO.output(IN2, GPIO.LOW)
-    GPIO.output(IN3, GPIO.LOW)
-    GPIO.output(IN4, GPIO.LOW)
-
 # Initialize camera with white balance adjustment
 def setup_camera():
     picam2 = Picamera2()
@@ -217,7 +176,7 @@ def setup_camera():
 
     # Disable automatic white balance and set manual gains
     picam2.set_controls({
-        "AwbEnable": 0,  # Disable AWB
+        "AwbEnable": turning off AWB
         "ColourGains": (1.5, 2.0)  # (red_gain, blue_gain) - increase blue gain to correct blue colors
     })
 
@@ -225,10 +184,10 @@ def setup_camera():
     time.sleep(2)  # Allow camera to warm up
     return picam2
 
-# Function to allow user to calibrate black line detection parameters
-def calibrate_black_line(picam2, color_ranges):
-    print("\nCalibrating black line detection...")
-    print("Place the camera to view the black line and press 'c' to capture and calibrate.")
+# Function to allow user to calibrate selected color detection parameters
+def calibrate_color(picam2, color_ranges, color_name):
+    print(f"\nCalibrating {color_name} line detection...")
+    print(f"Place the camera to view the {color_name} line and press 'c' to capture and calibrate.")
     print("Press 'q' to skip calibration.")
     
     while True:
@@ -242,7 +201,7 @@ def calibrate_black_line(picam2, color_ranges):
         else:
             roi = frame
             
-        cv2.putText(frame, "Press 'c' to calibrate black line", (10, 30),
+        cv2.putText(frame, f"Press 'c' to calibrate {color_name} line", (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
         
         cv2.imshow("Calibration", frame)
@@ -256,19 +215,33 @@ def calibrate_black_line(picam2, color_ranges):
             # Convert ROI to HSV
             hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
             
-            # Create a mask for black pixels (start with very broad range)
-            black_mask = cv2.inRange(hsv_roi, np.array([0, 0, 0]), np.array([180, 100, 80]))
+            # Create a broad initial mask for the color
+            if color_name == 'red':
+                # Combine lower and upper red ranges
+                mask1 = cv2.inRange(hsv_roi, np.array([0, 100, 100]), np.array([10, 255, 255]))
+                mask2 = cv2.inRange(hsv_roi, np.array([170, 100, 100]), np.array([180, 255, 255]))
+                color_mask = cv2.bitwise_or(mask1, mask2)
+            else:
+                # Use a broad range for other colors
+                broad_ranges = {
+                    'blue': ([90, 100, 50], [140, 255, 255]),
+                    'green': ([30, 100, 50], [85, 255, 255]),
+                    'yellow': ([20, 100, 100], [40, 255, 255]),
+                    'black': ([0, 0, 0], [180, 100, 80])
+                }
+                lower, upper = broad_ranges.get(color_name, ([0, 0, 0], [180, 255, 255]))
+                color_mask = cv2.inRange(hsv_roi, np.array(lower), np.array(upper))
             
             # Find contours in the mask
-            contours, _ = cv2.findContours(black_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            contours, _ = cv2.findContours(color_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
             if contours:
-                # Find the largest contour (black line)
-                black_contour = max(contours, key=cv2.contourArea)
-                if cv2.contourArea(black_contour) > MIN_CONTOUR_AREA:
+                # Find the largest contour
+                largest_contour = max(contours, key=cv2.contourArea)
+                if cv2.contourArea(largest_contour) > MIN_CONTOUR_AREA:
                     # Create a mask from the contour
-                    mask = np.zeros_like(black_mask)
-                    cv2.drawContours(mask, [black_contour], -1, 255, -1)
+                    mask = np.zeros_like(color_mask)
+                    cv2.drawContours(mask, [largest_contour], -1, 255, -1)
                     
                     # Find the HSV range of pixels in the contour
                     roi_pixels = hsv_roi[mask == 255]
@@ -276,31 +249,41 @@ def calibrate_black_line(picam2, color_ranges):
                         h_min, s_min, v_min = np.min(roi_pixels, axis=0)
                         h_max, s_max, v_max = np.max(roi_pixels, axis=0)
                         
-                        # Apply some margins
+                        # Apply margins
                         h_min = max(0, h_min - 10)
                         s_min = max(0, s_min - 10)
                         v_min = max(0, v_min - 10)
                         h_max = min(179, h_max + 10)
-                        s_max = min(255, s_max + 40)  # More margin for saturation
-                        v_max = min(255, v_max + 40)  # More margin for value
+                        s_max = min(255, s_max + 40)
+                        v_max = min(255, v_max + 40)
                         
-                        # Update black color range
-                        color_ranges['black'] = [([h_min, s_min, v_min], [h_max, s_max, v_max])]
+                        # Update color range
+                        if color_name == 'red':
+                            # Split into lower and upper ranges
+                            if h_max > 90:  # Upper red range
+                                color_ranges['red'] = [([170, s_min, v_min], [180, s_max, v_max])]
+                            else:  # Lower red range
+                                color_ranges['red'] = [([h_min, s_min, v_min], [h_max, s_max, v_max])]
+                        else:
+                            color_ranges[color_name] = [([h_min, s_min, v_min], [h_max, s_max, v_max])]
                         
-                        print(f"Updated black line HSV range: ({h_min}, {s_min}, {v_min}) to ({h_max}, {s_max}, {v_max})")
+                        print(f"Updated {color_name} line HSV range: ({h_min}, {s_min}, {v_min}) to ({h_max}, {s_max}, {v_max})")
                         
                         # Show the calibrated mask
-                        calibrated_mask = cv2.inRange(hsv_roi, np.array([h_min, s_min, v_min]), np.array([h_max, s_max, v_max]))
-                        cv2.imshow("Calibrated Black Line Mask", calibrated_mask)
+                        if color_name == 'red' and h_max > 90:
+                            calibrated_mask = cv2.inRange(hsv_roi, np.array([170, s_min, v_min]), np.array([180, s_max, v_max]))
+                        else:
+                            calibrated_mask = cv2.inRange(hsv_roi, np.array([h_min, s_min, v_min]), np.array([h_max, s_max, v_max]))
+                        cv2.imshow(f"Calibrated {color_name.capitalize()} Line Mask", calibrated_mask)
                         cv2.waitKey(2000)
-                        cv2.destroyWindow("Calibrated Black Line Mask")
+                        cv2.destroyWindow(f"Calibrated {color_name.capitalize()} Line Mask")
                         break
                     else:
-                        print("Could not find black pixels in the contour. Please try again.")
+                        print(f"Could not find {color_name} pixels in the contour. Please try again.")
                 else:
-                    print("Black line contour too small. Please try again.")
+                    print(f"{color_name.capitalize()} line contour too small. Please try again.")
             else:
-                print("No black line detected. Please try again.")
+                print(f"No {color_name} line detected. Please try again.")
                 
     cv2.destroyWindow("Calibration")
 
@@ -352,9 +335,8 @@ def detect_line(frame, color_priorities, color_ranges, tight_turn=False):
         kernel = np.ones((5, 5), np.uint8)
         color_mask = cv2.morphologyEx(color_mask, cv2.MORPH_CLOSE, kernel)
         
-        # Show the masks for debugging
-        if color_name == 'black':
-            cv2.imshow(f"{color_name} Mask", color_mask)
+        # Show the masks for debugging for all colors
+        cv2.imshow(f"{color_name.capitalize()} Mask", color_mask)
         
         # Find contours
         contours, _ = cv2.findContours(color_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -486,8 +468,11 @@ def main():
         GPIO.cleanup()
         return
     
-    # Offer calibration
-    calibrate_black_line(picam2, color_ranges)
+    # Offer calibration for the highest-priority color
+    if color_priorities[0] != 'black':  # Skip calibration for black if it's highest priority
+        calibrate_color(picam2, color_ranges, color_priorities[0])
+    else:
+        calibrate_color(picam2, color_ranges, 'black')
     
     print("Line follower with color detection started. Press 'q' in the display window or Ctrl+C to stop.")
     
@@ -583,48 +568,42 @@ def main():
             # Show the frame
             cv2.imshow("Color Line Detection", frame)
             
-            # Motor control logic
+            # Print detection status
             if line_found:
                 recovery_mode = False
                 if error > TURN_THRESHOLD:
-                    pivot_turn_right(right_pwm, left_pwm)
                     print(f"Pivot Turning Right - {detected_color} line")
                 elif error < -TURN_THRESHOLD:
-                    pivot_turn_left(right_pwm, left_pwm)
                     print(f"Pivot Turning Left - {detected_color} line")
                 else:
                     if tight_turn:
                         if line_angle > 0:
-                            pivot_turn_right(right_pwm, left_pwm)
                             print(f"Tight Turn Right - {detected_color} line")
                         else:
-                            pivot_turn_left(right_pwm, left_pwm)
                             print(f"Tight Turn Left - {detected_color} line")
                     else:
-                        move_forward(right_pwm, left_pwm)
                         print(f"Moving Forward - {detected_color} line (Available: {', '.join(all_available_colors)})")
             else:
-                # No line detected - only now do we go into recovery mode
                 if not recovery_mode:
                     print("No line detected. Starting recovery...")
                     recovery_mode = True
-                
-                move_backward(right_pwm, left_pwm, REVERSE_SPEED)
                 print("Reversing to find line...")
-                time.sleep(0.1)  # Small delay to avoid flooding the console
+                time.sleep(0.1)
             
             # Check for key presses
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
                 break
             elif key == ord('c'):
-                # Allow recalibration during runtime
-                calibrate_black_line(picam2, color_ranges)
+                # Allow recalibration during runtime for the highest-priority color
+                if color_priorities[0] != 'black':
+                    calibrate_color(picam2, color_ranges, color_priorities[0])
+                else:
+                    calibrate_color(picam2, color_ranges, 'black')
     
     except KeyboardInterrupt:
         print("\nProgram stopped by user")
     finally:
-        stop_motors(right_pwm, left_pwm)
         cv2.destroyAllWindows()
         GPIO.cleanup()
         picam2.stop()
