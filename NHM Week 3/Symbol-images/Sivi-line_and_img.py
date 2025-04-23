@@ -21,6 +21,7 @@ WHEEL_CIRCUMFERENCE = np.pi * WHEEL_DIAMETER  # cm
 
 # Line following parameters
 BASE_SPEED = 45           # Base motor speed (0-100)
+TURN	# Line following parameters
 TURN_SPEED = 60           # Speed for pivot turns (0-100)
 MIN_CONTOUR_AREA = 800     # Minimum area for valid contours
 FRAME_WIDTH = 640          # Camera frame width
@@ -29,6 +30,7 @@ TURN_THRESHOLD = 100       # Error threshold for pivoting
 REVERSE_SPEED = 40         # Speed when reversing
 USE_ROI = True             # Enable ROI for line detection
 ROI_HEIGHT = 150           # Height of the ROI from the bottom
+SHAPE_ROI_WIDTH = 200      # Width of the ROI for shape detection (centered)
 
 # Variables for encoder counts
 right_counter = 0
@@ -335,12 +337,18 @@ def detect_images_shapes_and_line(frame, prev_detections, reference_data, color_
     detected_name = None
     label = "Detected: None"
     
-    # Only perform shape/image detection in ROI if line is found
-    if line_found and USE_ROI:
+    # Only perform shape/image detection if line is found
+    if line_found:
+        # Define ROI for shape detection: full height, centered width
+        shape_roi_x_start = (FRAME_WIDTH - SHAPE_ROI_WIDTH) // 2  # Center the ROI
+        shape_roi_x_end = shape_roi_x_start + SHAPE_ROI_WIDTH
+        shape_roi_frame = frame[0:FRAME_HEIGHT, shape_roi_x_start:shape_roi_x_end]
+        
+        # Draw ROI rectangle for visualization
+        cv2.rectangle(frame, (shape_roi_x_start, 0), (shape_roi_x_end, FRAME_HEIGHT), (0, 255, 255), 2)
+        
         # Preprocess ROI for shape detection
-        roi_y_start = FRAME_HEIGHT - ROI_HEIGHT
-        roi_frame = frame[roi_y_start:FRAME_HEIGHT, 0:FRAME_WIDTH]
-        gray = cv2.cvtColor(roi_frame, cv2.COLOR_BGR2GRAY)
+        gray = cv2.cvtColor(shape_roi_frame, cv2.COLOR_BGR2GRAY)
         blurred = cv2.GaussianBlur(gray, (5, 5), 0)
         _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         edges = cv2.Canny(thresh, 30, 200)
@@ -367,11 +375,11 @@ def detect_images_shapes_and_line(frame, prev_detections, reference_data, color_
         # Validate color if we have a contour match
         if best_match and best_contour is not None:
             # Create mask for current contour
-            mask = np.zeros(roi_frame.shape[:2], dtype=np.uint8)
+            mask = np.zeros(shape_roi_frame.shape[:2], dtype=np.uint8)
             cv2.drawContours(mask, [best_contour], -1, 255, -1)
             
             # Calculate color histogram for current contour
-            hsv = cv2.cvtColor(roi_frame, cv2.COLOR_BGR2HSV)
+            hsv = cv2.cvtColor(shape_roi_frame, cv2.COLOR_BGR2HSV)
             hist = cv2.calcHist([hsv], [0, 1, 2], mask, [8, 8, 8], [0, 180, 0, 256, 0, 256])
             cv2.normalize(hist, hist)
             
@@ -381,12 +389,11 @@ def detect_images_shapes_and_line(frame, prev_detections, reference_data, color_
             # Validate match based on color similarity
             if color_score < 50:  # Threshold for color histogram similarity
                 detected_name = best_match
-                # Draw contour in ROI
-                cv2.drawContours(frame[roi_y_start:FRAME_HEIGHT, 0:FRAME_WIDTH], 
-                               [best_contour], -1, (0, 255, 0), 2)
+                # Draw contour in ROI (adjust for ROI offset)
+                shifted_contour = best_contour + [shape_roi_x_start, 0]  # Shift contour x-coordinates
+                cv2.drawContours(frame, [shifted_contour], -1, (0, 255, 0), 2)
                 # Calculate bounding box for text
-                x, y, w, h = cv2.boundingRect(best_contour)
-                y = y + roi_y_start  # Adjust for ROI offset
+                x, y, w, h = cv2.boundingRect(shifted_contour)
                 cv2.putText(frame, detected_name, (x, y - 10), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
                 label = f"Detected: {detected_name}"
