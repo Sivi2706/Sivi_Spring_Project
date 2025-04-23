@@ -189,7 +189,7 @@ def is_contour_complete(contour, frame_width, frame_height, margin=CONTOUR_MARGI
             x + w < frame_width - margin and
             y + h < frame_height - margin)
 
-# Preprocess and store reference images
+# Preprocess and store reference images with display
 def preprocess_reference_images():
     reference_shapes = {}
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -233,16 +233,41 @@ def preprocess_reference_images():
                 print("Unknown shape")
                 continue
                 
+            # Create display image with contour
+            display_img = img.copy()
+            cv2.drawContours(display_img, [main_contour], -1, (0, 255, 0), 2)
+            x, y, w, h = cv2.boundingRect(main_contour)
+            aspect_ratio = w/h if h != 0 else 1.0
+            area = cv2.contourArea(main_contour)
+            cv2.putText(display_img, f"{shape_type.capitalize()} (AR: {aspect_ratio:.2f}, Area: {area:.0f})",
+                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+            
+            # Display the image
+            cv2.imshow(f"Reference Image: {filename}", display_img)
+            print(f"Stored as {shape_type} (AR: {aspect_ratio:.2f}, Area: {area:.0f})")
+            print("Press any key to continue to next image, or 'q' to quit...")
+            key = cv2.waitKey(0) & 0xFF
+            cv2.destroyWindow(f"Reference Image: {filename}")
+            if key == ord('q'):
+                print("Preprocessing aborted by user.")
+                return None
+                
             # Store contour data
             reference_shapes[filename] = {
                 'contour': main_contour,
                 'shape': shape_type,
-                'aspect_ratio': cv2.boundingRect(main_contour)[2] / cv2.boundingRect(main_contour)[3],
-                'area': cv2.contourArea(main_contour)
+                'aspect_ratio': aspect_ratio,
+                'area': area
             }
-            print(f"Stored as {shape_type} (AR: {reference_shapes[filename]['aspect_ratio']:.2f}, Area: {reference_shapes[filename]['area']:.0f})")
     
     print(f"\nPreprocessing complete. Loaded {len(reference_shapes)} reference shapes.")
+    if reference_shapes:
+        print("\nPress Enter to start line following and shape detection, or Ctrl+C to quit...")
+        try:
+            input()
+        except KeyboardInterrupt:
+            print("\nPreprocessing aborted by user.")
+            return None
     return reference_shapes
 
 # Classify shape based on contour approximation
@@ -291,8 +316,8 @@ def match_contour(contour, reference_shapes):
         # Compare areas (normalized difference)
         area_diff = abs(current_area - ref_data['area']) / max(current_area, ref_data['area'])
         
-        # Combined score (weighted)
-        combined_score = score * 0.5 + ar_diff * 0.3 + area_diff * 0.2
+        # Combined score (weighted, emphasizing dimensional ratios)
+        combined_score = score * 0.3 + ar_diff * 0.4 + area_diff * 0.3
         
         print(f"  Comparing with {name}:")
         print(f"    Shape Match Score: {score:.3f}")
@@ -531,7 +556,7 @@ def main():
     # Preprocess reference images first
     reference_shapes = preprocess_reference_images()
     if not reference_shapes:
-        print("No valid reference images found. Please add PNG images to the script directory.")
+        print("No valid reference images found or preprocessing aborted. Please add PNG images to the script directory.")
         return
     
     # Initialize hardware
