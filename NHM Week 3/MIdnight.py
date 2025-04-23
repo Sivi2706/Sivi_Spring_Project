@@ -265,6 +265,7 @@ def match_image(frame, reference_images, orb):
         print(f"{name}: {count} matches")
     return best_match
 
+
 # Symbol Detection Functions
 def detect_shapes(frame):
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -276,7 +277,7 @@ def detect_shapes(frame):
     contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     shape_detected = None
     symbol_mask = np.zeros_like(gray)
-    shape_outline_mask = np.zeros_like(gray)  # New binary mask for shape outline
+    shape_outline_mask = np.zeros_like(gray)  # Binary mask for shape outline
     
     for contour in contours:
         if cv2.contourArea(contour) < 1000:
@@ -347,8 +348,7 @@ def detect_shapes(frame):
             except cv2.error as e:
                 print(f"Convexity defect calculation skipped: {e}")
     
-    return shape_detected, symbol_mask, shape_outline_mask  # Return the new binary mask
-
+    return shape_detected, symbol_mask, shape_outline_mask
 def detect_images(frame, prev_detections, reference_images, orb, max_len=10):
     if reference_images:
         match_name = match_image(frame, reference_images, orb)
@@ -356,6 +356,7 @@ def detect_images(frame, prev_detections, reference_images, orb, max_len=10):
         match_name = None
     shape_detected, symbol_mask, shape_outline_mask = None, np.zeros_like(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)), np.zeros_like(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
     if not match_name:
+        # Updated to handle three return values from detect_shapes
         shape_detected, symbol_mask, shape_outline_mask = detect_shapes(frame)
     current_detection = match_name if match_name else shape_detected
     prev_detections.append(current_detection)
@@ -370,29 +371,8 @@ def detect_images(frame, prev_detections, reference_images, orb, max_len=10):
         label = "Symbol: None"
     cv2.rectangle(frame, (5, 120), (250, 150), (0, 0, 0), -1)
     cv2.putText(frame, label, (10, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-    return frame, detected_name, symbol_mask, shape_outline_mask  # Return the new binary mask
-def detect_images(frame, prev_detections, reference_images, orb, max_len=10):
-    if reference_images:
-        match_name = match_image(frame, reference_images, orb)
-    else:
-        match_name = None
-    shape_detected, symbol_mask = None, np.zeros_like(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
-    if not match_name:
-        shape_detected, symbol_mask = detect_shapes(frame)
-    current_detection = match_name if match_name else shape_detected
-    prev_detections.append(current_detection)
-    if len(prev_detections) > max_len:
-        prev_detections.popleft()
-    valid_detections = [d for d in prev_detections if d is not None]
-    detected_name = None
-    if valid_detections and valid_detections.count(valid_detections[0]) >= 3:  # Require consistency
-        detected_name = max(set(valid_detections), key=valid_detections.count)
-        label = f"Symbol: {detected_name}"
-    else:
-        label = "Symbol: None"
-    cv2.rectangle(frame, (5, 120), (250, 150), (0, 0, 0), -1)
-    cv2.putText(frame, label, (10, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-    return frame, detected_name, symbol_mask
+    return frame, detected_name, symbol_mask, shape_outline_mask
+
 
 # Announce Symbol
 def announce_symbol(symbol, last_announced, announce_interval=2.0):
@@ -622,7 +602,6 @@ def detect_line(frame, color_priorities, color_ranges):
 
     return 0, False, None, [], debug_mask
 
-# Main function
 def main():
     left_pwm, right_pwm, servo_pwm = setup_gpio()
     picam2 = initialize_camera()
@@ -667,7 +646,6 @@ def main():
             
             if frame_count % symbol_skip == 0:
                 symbol_roi = frame[0:SYMBOL_ROI_HEIGHT, 0:FRAME_WIDTH]
-                # Updated to handle four return values
                 output_frame, detected_symbol, symbol_mask, shape_outline_mask = detect_images(symbol_roi, prev_detections, reference_images, orb)
                 frame[0:SYMBOL_ROI_HEIGHT, 0:FRAME_WIDTH] = output_frame
                 last_announced = announce_symbol(detected_symbol, last_announced)
@@ -716,7 +694,7 @@ def main():
     except Exception as e:
         print(f"Unexpected error: {e}")
         import traceback
-        traceback.print_exc()  # Print full stack trace for debugging
+        traceback.print_exc()
     finally:
         stop_motors(left_pwm, right_pwm, servo_pwm)
         try:
