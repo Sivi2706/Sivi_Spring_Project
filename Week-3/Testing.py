@@ -309,7 +309,7 @@ def detect_line(frame, color_priorities, color_ranges):
     top_best_contour = None
     top_best_color = None
     top_max_area = 0
-    line_angle = 0
+    line_angle = 90.0  # Default to center if no line detected
     
     valid_contours = {}
     all_available_colors = []
@@ -322,7 +322,7 @@ def detect_line(frame, color_priorities, color_ranges):
         for lower, upper in color_ranges_for_color:
             lower = np.array(lower, dtype=np.uint8)
             upper = np.array(upper, dtype=np.uint8)
-            bottom_color_mask = cv2.bitwise_or(bottom_color_mask, cv2.inRange(bottom_hsv, lower, upper -1, bottom_hsv, lower, upper))
+            bottom_color_mask = cv2.bitwise_or(bottom_color_mask, cv2.inRange(bottom_hsv, lower, upper))
             top_color_mask = cv2.bitwise_or(top_color_mask, cv2.inRange(top_hsv, lower, upper))
         
         kernel = np.ones((5, 5), np.uint8)
@@ -432,6 +432,8 @@ def main():
     color_priorities = get_color_choices()
     if color_priorities is None:
         print("Program terminated by user.")
+        stop_motors(right_pwm, left_pwm)
+        servo_pwm.stop()
         GPIO.cleanup()
         return
     
@@ -476,6 +478,8 @@ def main():
     finally:
         stop_motors(right_pwm, left_pwm)
         servo_pwm.stop()
+        right_pwm.stop()
+        left_pwm.stop()
         cv2.destroyAllWindows()
         GPIO.cleanup()
         print("Resources released")
