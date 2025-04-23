@@ -29,6 +29,7 @@ TURN_THRESHOLD = 100       # Error threshold for pivoting
 REVERSE_SPEED = 40         # Speed when reversing
 SHAPE_ROI_WIDTH = 200      # Width of the ROI for shape detection (centered)
 ASPECT_RATIO_TOLERANCE = 0.2  # Tolerance for aspect ratio matching
+DEFAULT_SHAPE_ROI_HEIGHT = FRAME_HEIGHT // 2  # Default height if no line detected
 
 # Variables for encoder counts
 right_counter = 0
@@ -272,6 +273,7 @@ def detect_line(frame, color_priorities, color_ranges):
     max_area = 0
     valid_contours = {}
     all_available_colors = []
+    line_y_top, line_y_bottom = 0, FRAME_HEIGHT  # Default values if no line detected
     
     for color_name in color_priorities:
         color_ranges_for_color = color_ranges.get(color_name, [])
@@ -318,6 +320,10 @@ def detect_line(frame, color_priorities, color_ranges):
         if M["m00"] != 0:
             best_cx = int(M["m10"] / M["m00"])
             best_cy = int(M["m01"] / M["m00"])
+            # Get bounding box for line to determine vertical extent
+            x, y, w, h = cv2.boundingRect(best_contour)
+            line_y_top = max(0, y - 10)  # Add small buffer above
+            line_y_bottom = min(FRAME_HEIGHT, y + h + 10)  # Add small buffer below
             contour_color = (0, 255, 0) if best_color != 'black' else (128, 128, 128)
             cv2.drawContours(frame, [best_contour], -1, contour_color, 2)
             cv2.circle(frame, (best_cx, best_cy), 5, (255, 0, 0), -1)
@@ -345,26 +351,30 @@ def detect_line(frame, color_priorities, color_ranges):
             cv2.drawContours(best_line_contour_display, [best_contour], -1, contour_color, 2)
             cv2.imshow("Best Line Contour", best_line_contour_display)
             
-            return error, True, best_color, all_available_colors, frame
-    return 0, False, None, [], frame
+            return error, True, best_color, all_available_colors, frame, line_y_top, line_y_bottom
+    return 0, False, None, [], frame, line_y_top, line_y_bottom
 
 # Combined Detection and Line Following with Contour and Color Validation
 def detect_images_shapes_and_line(frame, prev_detections, reference_data, color_priorities, color_ranges, right_pwm, left_pwm, pause_state, max_len=5):
     # Line detection
-    error, line_found, detected_color, available_colors, _ = detect_line(frame, color_priorities, color_ranges)
+    error, line_found, detected_color, available_colors, _, line_y_top, line_y_bottom = detect_line(frame, color_priorities, color_ranges)
     
     detected_name = None
     label = "Detected: None"
     
     # Only perform shape/image detection if line is found
     if line_found:
-        # Define ROI for shape detection: full height, centered width
-        shape_roi_x_start = (FRAME_WIDTH - SHAPE_ROI_WIDTH) // 2  # Center the ROI
+        # Define ROI for shape detection: above the line, centered width
+        shape_roi_x_start = (FRAME_WIDTH - SHAPE_ROI_WIDTH) // 2  # Center the ROI horizontally
         shape_roi_x_end = shape_roi_x_start + SHAPE_ROI_WIDTH
-        shape_roi_frame = frame[0:FRAME_HEIGHT, shape_roi_x_start:shape_roi_x_end]
+        shape_roi_y_start = 0
+        shape_roi_y_end = line_y_top  # End at the top of the line
+        if shape_roi_y_end <= shape_roi_y_start + 50:  # Ensure minimum height
+            shape_roi_y_end = DEFAULT_SHAPE_ROI_HEIGHT  # Fallback to default height
+        shape_roi_frame = frame[shape_roi_y_start:shape_roi_y_end, shape_roi_x_start:shape_roi_x_end]
         
         # Draw ROI rectangle for visualization
-        cv2.rectangle(frame, (shape_roi_x_start, 0), (shape_roi_x_end, FRAME_HEIGHT), (0, 255, 255), 2)
+        cv2.rectangle(frame, (shape_roi_x_start, shape_roi_y_start), (shape_roi_x_end, shape_roi_y_end), (0, 255, 255), 2)
         
         # Preprocess ROI for shape detection
         gray = cv2.cvtColor(shape_roi_frame, cv2.COLOR_BGR2GRAY)
@@ -380,7 +390,7 @@ def detect_images_shapes_and_line(frame, prev_detections, reference_data, color_
         contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
         # Create an image to show all shape contours
-        shape_contour_display = np.zeros((FRAME_HEIGHT, SHAPE_ROI_WIDTH, 3), dtype=np.uint8)
+        shape_contour_display = np.zeros((shape_roi_y_end - shape_roi_y_start, SHAPE_ROI_WIDTH, 3), dtype=np.uint8)
         for contour in contours:
             if cv2.contourArea(contour) >= 500:
                 cv2.drawContours(shape_contour_display, [contour], -1, (0, 255, 0), 2)
@@ -396,7 +406,7 @@ def detect_images_shapes_and_line(frame, prev_detections, reference_data, color_
                 continue
                 
             # Check if contour is complete
-            if not is_contour_complete(contour, SHAPE_ROI_WIDTH, FRAME_HEIGHT):
+            if not is_contour_complete(contour, SHAPE_ROI_WIDTH, shape_roi_y_end - shape_roi_y_start):
                 continue
                 
             # Calculate aspect ratio
@@ -433,7 +443,7 @@ def detect_images_shapes_and_line(frame, prev_detections, reference_data, color_
             if color_score < 50:  # Threshold for color histogram similarity
                 detected_name = best_match
                 # Draw contour in ROI (adjust for ROI offset)
-                shifted_contour = best_contour + [shape_roi_x_start, 0]  # Shift contour x-coordinates
+                shifted_contour = best_contour + [shape_roi_x_start, shape_roi_y_start]  # Shift x and y coordinates
                 cv2.drawContours(frame, [shifted_contour], -1, (0, 255, 0), 2)
                 # Calculate bounding box for text
                 x, y, w, h = cv2.boundingRect(shifted_contour)
@@ -443,13 +453,13 @@ def detect_images_shapes_and_line(frame, prev_detections, reference_data, color_
                 print(f"Confirmed {detected_name} with contour score: {best_score:.3f}, color score: {color_score:.3f}")
                 
                 # Show best shape contour separately
-                best_shape_contour_display = np.zeros((FRAME_HEIGHT, SHAPE_ROI_WIDTH, 3), dtype=np.uint8)
+                best_shape_contour_display = np.zeros((shape_roi_y_end - shape_roi_y_start, SHAPE_ROI_WIDTH, 3), dtype=np.uint8)
                 cv2.drawContours(best_shape_contour_display, [best_contour], -1, (0, 255, 0), 2)
                 cv2.imshow("Best Shape Contour", best_shape_contour_display)
             else:
                 print(f"Color validation failed for {best_match}. Score: {color_score:.3f}")
                 detected_name = None
-                label ="Detected: None"
+                label = "Detected: None"
     
     # Update detection history
     prev_detections.append(detected_name)
