@@ -27,7 +27,6 @@ def load_reference_images():
             if img is None:
                 print(f"Failed to load reference image: {filename}")
                 continue
-            # Resize reference image to match live feed resolution for better matching
             img = cv2.resize(img, (640, 480), interpolation=cv2.INTER_AREA)
             keypoints, descriptors = orb.detectAndCompute(img, None)
             if descriptors is not None:
@@ -39,22 +38,25 @@ def load_reference_images():
 # ORB Feature Matching with Orientation Detection
 def match_image(frame, orb, reference_images):
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    # Apply slight blur to reduce noise in live feed
     gray = cv2.GaussianBlur(gray, (5, 5), 0)
     keypoints, descriptors = orb.detectAndCompute(gray, None)
     if descriptors is None:
         print("No descriptors detected in frame.")
-        return None, None, gray
+        return None, None, gray, None, 0  # Include supposed match and count
     matches_dict = {}
     bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
     best_match = None
     best_matches = None
     best_ref_keypoints = None
-    # Lower the threshold for live feed to increase sensitivity
-    match_threshold = 15  # Reduced from 30
+    supposed_match = None
+    supposed_match_count = 0
+    match_threshold = 15
     for name, (ref_keypoints, ref_descriptors, ref_img) in reference_images.items():
         matches = bf.match(descriptors, ref_descriptors)
         matches_dict[name] = len(matches)
+        if len(matches) > supposed_match_count:
+            supposed_match = name
+            supposed_match_count = len(matches)
         if len(matches) > match_threshold:
             matches = sorted(matches, key=lambda x: x.distance)
             if not best_match or len(matches) > matches_dict[best_match]:
@@ -77,8 +79,8 @@ def match_image(frame, orb, reference_images):
             dx = tip[0] - center[0]
             dy = tip[1] - center[1]
             angle = np.degrees(np.arctan2(dy, dx)) % 360
-            return best_match, (center, tip, angle), gray
-    return None, None, gray
+            return best_match, (center, tip, angle), gray, supposed_match, supposed_match_count
+    return None, None, gray, supposed_match, supposed_match_count
 
 # Shape Detection Function
 def detect_shapes(frame, gray):
@@ -135,15 +137,13 @@ def detect_shapes(frame, gray):
     return shape_detected, blurred, thresh, edges
 
 # Process Frame (for both live and sample images)
-def process_frame(frame, prev_detections, orb, reference_images, max_len=5):
-    # Ensure frame is in BGR format
+def process_frame(frame, prev_detections, orb, reference_images, max_len=5, is_live_feed=False):
     if len(frame.shape) == 2:
         frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
     elif frame.shape[2] == 4:
         frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
-    # Resize frame to match reference image resolution
     frame = cv2.resize(frame, (640, 480), interpolation=cv2.INTER_AREA)
-    match_name, orientation, gray = match_image(frame, orb, reference_images)
+    match_name, orientation, gray, supposed_match, supposed_match_count = match_image(frame, orb, reference_images)
     shape_detected, blurred, thresh, edges = (None, gray, None, None)
     if not match_name:
         shape_detected, blurred, thresh, edges = detect_shapes(frame.copy(), gray)
@@ -164,6 +164,11 @@ def process_frame(frame, prev_detections, orb, reference_images, max_len=5):
     else:
         detected_name = None
         label = "Detected: None"
+    # For live feed, show supposed match metadata
+    if is_live_feed:
+        supposed_label = f"Supposed Match: {supposed_match if supposed_match else 'None'} | Matches: {supposed_match_count}"
+        cv2.rectangle(frame, (5, 45), (500, 80), (0, 0, 0), -1)  # Black background for supposed match
+        cv2.putText(frame, supposed_label, (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)  # Red text for supposed match
     cv2.rectangle(frame, (5, 5), (400, 40), (0, 0, 0), -1)
     cv2.putText(frame, label, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
     print(f"Stabilized Detection Result: {detected_name if detected_name else 'None'}")
@@ -215,7 +220,7 @@ def process_live_feed(picam2, reference_images, orb, live_feed_enabled):
     prev_detections = deque()
     while live_feed_enabled[0]:
         frame = picam2.capture_array()
-        output_frame, detected_name, gray, blurred, thresh, edges = process_frame(frame, prev_detections, orb, reference_images)
+        output_frame, detected_name, gray, blurred, thresh, edges = process_frame(frame, prev_detections, orb, reference_images, is_live_feed=True)
         cv2.imshow("Live Feed", output_frame)
         if gray is not None:
             cv2.imshow("Grayscale", gray)
