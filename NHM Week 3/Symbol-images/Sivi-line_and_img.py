@@ -379,11 +379,18 @@ def is_valid_detection(detection):
     return detection is not None and detection != "Unknown"
 
 # Combined Image and Shape Detection with Line Following
+# Combined Image and Shape Detection with Line Following
 def detect_images_shapes_and_line(frame, prev_detections, reference_images, orb, color_priorities, color_ranges, right_pwm, left_pwm, pause_state, max_len=5):
-    match_name, orientation = match_image(frame, reference_images, orb)
+    # Line detection first
+    error, line_found, detected_color, available_colors = detect_line(frame, color_priorities, color_ranges)
+    
+    # Only perform image/shape detection if a line is found
+    match_name = None
     shape_detected = None
-    if not match_name:
-        shape_detected = detect_shapes(frame)
+    if line_found:
+        match_name, orientation = match_image(frame, reference_images, orb)
+        if not match_name:
+            shape_detected = detect_shapes(frame)
     
     current_detection = match_name if match_name else shape_detected
     prev_detections.append(current_detection)
@@ -406,9 +413,6 @@ def detect_images_shapes_and_line(frame, prev_detections, reference_images, orb,
     
     cv2.rectangle(frame, (5, 5), (400, 40), (0, 0, 0), -1)
     cv2.putText(frame, label, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-    
-    # Line following logic
-    error, line_found, detected_color, available_colors = detect_line(frame, color_priorities, color_ranges)
     
     # Check if we need to enter pause state - only for confirmed shapes/images (not Unknown)
     should_pause = False
@@ -462,6 +466,7 @@ def detect_images_shapes_and_line(frame, prev_detections, reference_images, orb,
             print("Reversing to find line...")
     
     return frame, detected_name, error, line_found, detected_color, available_colors, pause_state
+
 
 # Main function
 def main():
