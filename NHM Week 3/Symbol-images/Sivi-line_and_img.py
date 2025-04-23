@@ -359,6 +359,7 @@ def detect_line(frame, color_priorities, color_ranges):
 # Combined Detection and Line Following with Contour and Color Validation
 # Combined Detection and Line Following with Contour and Color Validation
 # Combined Detection and Line Following with Contour and Color Validation
+# Combined Detection and Line Following with Contour and Color Validation
 def detect_images_shapes_and_line(frame, prev_detections, reference_data, color_priorities, color_ranges, right_pwm, left_pwm, pause_state, max_len=5):
     # Line detection
     error, line_found, detected_color, available_colors, _, line_y_top, line_y_bottom, thresh = detect_line(frame, color_priorities, color_ranges)
@@ -404,7 +405,7 @@ def detect_images_shapes_and_line(frame, prev_detections, reference_data, color_
         # Combine contours from both ROIs
         contours = list(contours_above) + contours_below_shifted
         
-        # Create an image to show all shape contours (full frame)
+        # Create an image to show all shape contours (full frame, no quadrants)
         shape_contour_display = np.zeros((FRAME_HEIGHT, FRAME_WIDTH, 3), dtype=np.uint8)
         for contour in contours:
             if cv2.contourArea(contour) >= 500:
@@ -440,6 +441,12 @@ def detect_images_shapes_and_line(frame, prev_detections, reference_data, color_
                     best_match = name
                     best_contour = contour
         
+        # Show best contour even if color validation fails (for debugging)
+        if best_contour is not None:
+            best_shape_contour_display = np.zeros((FRAME_HEIGHT, FRAME_WIDTH, 3), dtype=np.uint8)
+            cv2.drawContours(best_shape_contour_display, [best_contour], -1, (0, 255, 0), 2)
+            cv2.imshow("Best Shape Contour", best_shape_contour_display)
+        
         # Validate color if we have a contour match
         if best_match and best_contour is not None:
             # Determine which ROI the contour belongs to for color validation
@@ -465,8 +472,8 @@ def detect_images_shapes_and_line(frame, prev_detections, reference_data, color_
             # Compare with reference histogram
             color_score = compare_color_histograms(hist, reference_data[best_match]['color_hist'])
             
-            # Validate match based on color similarity
-            if color_score < 50:  # Threshold for color histogram similarity
+            # Validate match based on color similarity (increased threshold)
+            if color_score < 100:  # Increased threshold for color histogram similarity
                 detected_name = best_match
                 # Draw contour on the frame
                 cv2.drawContours(frame, [best_contour], -1, (0, 255, 0), 2)
@@ -476,13 +483,8 @@ def detect_images_shapes_and_line(frame, prev_detections, reference_data, color_
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
                 label = f"Detected: {detected_name}"
                 print(f"Confirmed {detected_name} with contour score: {best_score:.3f}, color score: {color_score:.3f}")
-                
-                # Show best shape contour separately
-                best_shape_contour_display = np.zeros((FRAME_HEIGHT, FRAME_WIDTH, 3), dtype=np.uint8)
-                cv2.drawContours(best_shape_contour_display, [best_contour], -1, (0, 255, 0), 2)
-                cv2.imshow("Best Shape Contour", best_shape_contour_display)
             else:
-                print(f"Color validation failed for {best_match}. Score: {color_score:.3f}")
+                print(f"Color validation failed for {best_match}. Score: {color_score:.3f}, Contour score: {best_score:.3f}")
                 detected_name = None
                 label = "Detected: None"
     
@@ -541,6 +543,7 @@ def detect_images_shapes_and_line(frame, prev_detections, reference_data, color_
     cv2.putText(frame, label, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
     
     return frame, detected_name, error, line_found, detected_color, available_colors, pause_state
+
 
 # Main function
 def main():
