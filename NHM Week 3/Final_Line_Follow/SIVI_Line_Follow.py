@@ -232,13 +232,12 @@ def stop_motors(right_pwm, left_pwm, servo_pwm):
 # Function to calibrate a specific color
 def calibrate_color(picam2, color_ranges, color_name):
     print(f"\nCalibrating {color_name} line detection...")
-    print(f"Place the camera to view the {color_name} line and press 'c' to capture and calibrate.")
-    print("Press 'q' to skip calibration for this color.")
+    print(f"View the camera feed, position the camera over the line, and press 'c' to start calibration or 'q' to skip.")
     
     # Initial broad HSV ranges for calibration
     initial_ranges = {
         'red': [([0, 100, 100], [10, 255, 255]), ([160, 100, 100], [180, 255, 255])],
-        'blue': [([90, 50, 50], [130, 255, 255])],
+        'blue': [([0, 0, 33], [179, 255, 255])],  # Broad range for blue
         'green': [([35, 100, 50], [85, 255, 255])],
         'yellow': [([20, 100, 100], [40, 255, 255])],
         'black': [([0, 0, 0], [180, 100, 80])]
@@ -274,48 +273,81 @@ def calibrate_color(picam2, color_ranges, color_name):
                 mask = np.zeros_like(color_mask)
                 cv2.drawContours(mask, [color_contour], -1, 255, -1)
                 
-                # Get HSV pixels from the contour
-                hsv_pixels = hsv[mask == 255]
-                if len(hsv_pixels) > 0:
-                    h_min = np.min(hsv_pixels[:, 0])
-                    h_max = np.max(hsv_pixels[:, 0])
-                    s_min = np.min(hsv_pixels[:, 1])
-                    s_max = np.max(hsv_pixels[:, 1])
-                    v_min = np.min(hsv_pixels[:, 2])
-                    v_max = np.max(hsv_pixels[:, 2])
+                # Get contour centroid (center of the error bar)
+                M = cv2.moments(color_contour)
+                if M["m00"] != 0:
+                    cx = int(M["m10"] / M["m00"])
+                    cy = int(M["m01"] / M["m00"])
                     
-                    # Apply margins
-                    h_min = max(0, h_min - 5)
-                    h_max = min(179, h_max + 5)
-                    s_min = max(0, s_min - 20)
-                    s_max = min(255, s_max + 20)
-                    v_min = max(0, v_min - 20)
-                    v_max = min(255, v_max + 20)
-                    
-                    # Update color range
-                    if color_name == 'red':
-                        # Handle red with two ranges
-                        if h_min < 10 and h_max > 170:
-                            color_ranges['red'] = [
-                                ([0, s_min, v_min], [10, s_max, v_max]),
-                                ([170, s_min, v_min], [180, s_max, v_max])
-                            ]
-                        else:
-                            color_ranges['red'] = [([h_min, s_min, v_min], [h_max, s_max, v_max])]
+                    if color_name == 'blue':
+                        # For blue, use the absolute HSV value at the centroid
+                        hsv_center = hsv[cy, cx]
+                        h, s, v = hsv_center
+                        
+                        # Create range around the central HSV value
+                        h_min = max(0, h - 5)
+                        h_max = min(179, h + 5)
+                        s_min = max(0, s - 20)
+                        s_max = min(255, s + 20)
+                        v_min = max(0, v - 20)
+                        v_max = min(255, v + 20)
+                        
+                        color_ranges['blue'] = [([h_min, s_min, v_min], [h_max, s_max, v_max])]
+                        
+                        print(f"Updated {color_name} line HSV range: ({h_min}, {s_min}, {v_min}) to ({h_max}, {s_max}, {v_max})")
+                        
+                        # Show the calibrated mask
+                        calibrated_mask = cv2.inRange(hsv, np.array([h_min, s_min, v_min]), np.array([h_max, s_max, v_max]))
+                        cv2.imshow(f"Calibrated {color_name.capitalize()} Line Mask", calibrated_mask)
+                        cv2.waitKey(2000)
+                        cv2.destroyWindow(f"Calibrated {color_name.capitalize()} Line Mask")
+                        cv2.destroyWindow("Calibration")
+                        return True
                     else:
-                        color_ranges[color_name] = [([h_min, s_min, v_min], [h_max, s_max, v_max])]
-                    
-                    print(f"Updated {color_name} line HSV range: ({h_min}, {s_min}, {v_min}) to ({h_max}, {s_max}, {v_max})")
-                    
-                    # Show the calibrated mask
-                    calibrated_mask = cv2.inRange(hsv, np.array([h_min, s_min, v_min]), np.array([h_max, s_max, v_max]))
-                    cv2.imshow(f"Calibrated {color_name.capitalize()} Line Mask", calibrated_mask)
-                    cv2.waitKey(2000)
-                    cv2.destroyWindow(f"Calibrated {color_name.capitalize()} Line Mask")
-                    cv2.destroyWindow("Calibration")
-                    return True
+                        # For other colors, use the existing min/max logic
+                        hsv_pixels = hsv[mask == 255]
+                        if len(hsv_pixels) > 0:
+                            h_min = np.min(hsv_pixels[:, 0])
+                            h_max = np.max(hsv_pixels[:, 0])
+                            s_min = np.min(hsv_pixels[:, 1])
+                            s_max = np.max(hsv_pixels[:, 1])
+                            v_min = np.min(hsv_pixels[:, 2])
+                            v_max = np.max(hsv_pixels[:, 2])
+                            
+                            # Apply margins
+                            h_min = max(0, h_min - 5)
+                            h_max = min(179, h_max + 5)
+                            s_min = max(0, s_min - 20)
+                            s_max = min(255, s_max + 20)
+                            v_min = max(0, v_min - 20)
+                            v_max = min(255, v_max + 20)
+                            
+                            # Update color range
+                            if color_name == 'red':
+                                # Handle red with two ranges
+                                if h_min < 10 and h_max > 170:
+                                    color_ranges['red'] = [
+                                        ([0, s_min, v_min], [10, s_max, v_max]),
+                                        ([170, s_min, v_min], [180, s_max, v_max])
+                                    ]
+                                else:
+                                    color_ranges['red'] = [([h_min, s_min, v_min], [h_max, s_max, v_max])]
+                            else:
+                                color_ranges[color_name] = [([h_min, s_min, v_min], [h_max, s_max, v_max])]
+                            
+                            print(f"Updated {color_name} line HSV range: ({h_min}, {s_min}, {v_min}) to ({h_max}, {s_max}, {v_max})")
+                            
+                            # Show the calibrated mask
+                            calibrated_mask = cv2.inRange(hsv, np.array([h_min, s_min, v_min]), np.array([h_max, s_max, v_max]))
+                            cv2.imshow(f"Calibrated {color_name.capitalize()} Line Mask", calibrated_mask)
+                            cv2.waitKey(2000)
+                            cv2.destroyWindow(f"Calibrated {color_name.capitalize()} Line Mask")
+                            cv2.destroyWindow("Calibration")
+                            return True
+                        else:
+                            print(f"No pixels found in {color_name} contour. Try again.")
                 else:
-                    print(f"No pixels found in {color_name} contour. Try again.")
+                    print(f"Invalid contour moments for {color_name}. Try again.")
             else:
                 print(f"{color_name.capitalize()} contour too small. Try again.")
         else:
