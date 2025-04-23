@@ -22,6 +22,8 @@ WHEEL_CIRCUMFERENCE = np.pi * WHEEL_DIAMETER  # cm
 # Line following parameters
 BASE_SPEED = 45           # Base motor speed (0-100)
 TURN_SPEED = 60           # Speed for pivot turns (0-100)
+REVERSE_SPEED = 40        # Speed for reverse when no line detected
+REVERSE_DURATION = 0.5    # Seconds to reverse
 MIN_CONTOUR_AREA = 800     # Minimum area for valid contours
 FRAME_WIDTH = 640          # Camera frame width
 FRAME_HEIGHT = 480         # Camera frame height
@@ -35,12 +37,17 @@ TOP_ROI_HEIGHT = int(FRAME_HEIGHT * 0.70)     # 70% for top line angle ROI
 # Servo parameters
 SERVO_FREQ = 50           # Hz
 SERVO_CENTER_DUTY = 7.5   # Duty cycle for 90 degrees (1.5 ms pulse)
-SERVO_MIN_DUTY = 5.0      # Duty cycle for 0 degrees (1 ms pulse)
-SERVO_MAX_DUTY = 10.0     # Duty cycle for 180 degrees (2 ms pulse)
+SERVO_MIN_DUTY = 6.25     # Duty cycle for 45 degrees (~1.25 ms pulse)
+SERVO_MAX_DUTY = 8.75     # Duty cycle for 135 degrees (~1.75 ms pulse)
+SERVO_SMOOTHING_FACTOR = 0.2  # Smoothing factor for servo (0-1, lower = smoother)
+SERVO_ANGLE_THRESHOLD = 2.0  # Minimum angle change to update servo (degrees)
 
 # Variables to store encoder counts
 right_counter = 0
 left_counter = 0
+
+# Servo smoothing variable
+last_smoothed_angle = 90.0  # Initial smoothed angle (center)
 
 # Calibration file
 CALIBRATION_FILE = "color_calibration.json"
@@ -193,6 +200,14 @@ def move_forward(right_pwm, left_pwm):
     right_pwm.ChangeDutyCycle(BASE_SPEED)
     left_pwm.ChangeDutyCycle(BASE_SPEED)
 
+def move_backward(right_pwm, left_pwm):
+    GPIO.output(IN1, GPIO.LOW)
+    GPIO.output(IN2, GPIO.HIGH)
+    GPIO.output(IN3, GPIO.HIGH)
+    GPIO.output(IN4, GPIO.LOW)
+    right_pwm.ChangeDutyCycle(REVERSE_SPEED)
+    left_pwm.ChangeDutyCycle(REVERSE_SPEED)
+
 def stop_motors(right_pwm, left_pwm):
     right_pwm.ChangeDutyCycle(0)
     left_pwm.ChangeDutyCycle(0)
@@ -201,12 +216,25 @@ def stop_motors(right_pwm, left_pwm):
     GPIO.output(IN3, GPIO.LOW)
     GPIO.output(IN4, GPIO.LOW)
 
-# Servo control function
+# Servo control function with smoothing
 def set_servo_angle(servo_pwm, line_angle):
-    # Map line angle (0-180 degrees) to duty cycle (5-10%)
-    duty_cycle = SERVO_MIN_DUTY + (line_angle / 180.0) * (SERVO_MAX_DUTY - SERVO_MIN_DUTY)
-    duty_cycle = max(SERVO_MIN_DUTY, min(SERVO_MAX_DUTY, duty_cycle))  # Clamp to valid range
-    servo_pwm.ChangeDutyCycle(duty_cycle)
+    global last_smoothed_angle
+    # Apply exponential moving average for smoothing
+    smoothed_angle = (SERVO_SMOOTHING_FACTOR * line_angle) + ((1 - SERVO_SMOOTHING_FACTOR) * last_smoothed_angle)
+    
+    # Only update if change exceeds threshold
+    if abs(smoothed_angle - last_smoothed_angle) > SERVO_ANGLE_THRESHOLD:
+        # Clamp angle to 45-135 degrees
+        smoothed_angle = max(45.0, min(135.0, smoothed_angle))
+        
+        # Map smoothed angle (45-135 degrees) to duty cycle (6.25-8.75%)
+        duty_cycle = SERVO_MIN_DUTY + ((smoothed_angle - 45.0) / 90.0) * (SERVO_MAX_DUTY - SERVO_MIN_DUTY)
+        duty_cycle = max(SERVO_MIN_DUTY, min(SERVO_MAX_DUTY, duty_cycle))
+        servo_pwm.ChangeDutyCycle(duty_cycle)
+        
+        last_smoothed_angle = smoothed_angle
+    
+    return last_smoothed_angle
 
 # Initialize camera
 def setup_camera():
@@ -434,12 +462,16 @@ def main():
         print("Program terminated by user.")
         stop_motors(right_pwm, left_pwm)
         servo_pwm.stop()
+        right_pwm.stop()
+        left_pwm.stop()
         GPIO.cleanup()
         return
     
     calibrate_black_line(picam2, color_ranges)
     
     print("Line follower with PID, angle detection, and servo control started. Press 'q' or Ctrl+C to stop.")
+    
+    was_line_lost = False  # Flag to trigger reverse only once per line loss
     
     try:
         while True:
@@ -456,6 +488,7 @@ def main():
             
             # Control motors based on bottom ROI error
             if line_found:
+                was_line_lost = False
                 if error > TURN_THRESHOLD:
                     pivot_turn_right(right_pwm, left_pwm)
                     print(f"Pivot Turning Right - {detected_color} line, Error: {error}")
@@ -466,12 +499,20 @@ def main():
                     move_forward(right_pwm, left_pwm)
                     print(f"Moving Forward - {detected_color} line, Error: {error}, Available: {', '.join(available_colors)}")
             else:
-                stop_motors(right_pwm, left_pwm)
-                print("No line detected. Stopping.")
+                if not was_line_lost:
+                    print("No line detected. Reversing...")
+                    move_backward(right_pwm, left_pwm)
+                    time.sleep(REVERSE_DURATION)
+                    stop_motors(right_pwm, left_pwm)
+                    was_line_lost = True
+                    print("Reverse complete. Stopping.")
+                else:
+                    stop_motors(right_pwm, left_pwm)
+                    print("No line detected. Stopped.")
             
-            # Control servo based on top ROI line angle
-            set_servo_angle(servo_pwm, line_angle)
-            print(f"Servo Angle Set to {line_angle:.2f} degrees")
+            # Control servo based on top ROI line angle with smoothing
+            smoothed_angle = set_servo_angle(servo_pwm, line_angle)
+            print(f"Servo Angle Set to {smoothed_angle:.2f} degrees")
                 
     except KeyboardInterrupt:
         print("\nProgram stopped by user")
