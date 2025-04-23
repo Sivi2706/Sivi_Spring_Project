@@ -82,9 +82,19 @@ def load_color_calibration():
             print("Using default color ranges.")
     else:
         print("No calibration file found. Using default color ranges.")
-        print("Run the color_calibration.py script first to create calibrated ranges.")
+        print("Run the program to calibrate colors or create a calibration file.")
     
     return default_color_ranges
+
+# Function to save calibrated color ranges
+def save_color_calibration(color_ranges):
+    """Save calibrated color ranges to file"""
+    try:
+        with open(CALIBRATION_FILE, 'w') as f:
+            json.dump(color_ranges, f, indent=4)
+        print(f"Saved calibrated color ranges to {CALIBRATION_FILE}")
+    except Exception as e:
+        print(f"Error saving calibration file: {e}")
 
 # Function to get user's color priority choice
 def get_color_choices():
@@ -219,11 +229,20 @@ def setup_camera():
     time.sleep(2)  # Allow camera to warm up
     return picam2
 
-# Function to allow user to calibrate black line detection parameters
-def calibrate_black_line(picam2, color_ranges):
-    print("\nCalibrating black line detection...")
-    print("Place the camera to view the black line and press 'c' to capture and calibrate.")
-    print("Press 'q' to skip calibration.")
+# Function to calibrate a specific color
+def calibrate_color(picam2, color_ranges, color_name):
+    print(f"\nCalibrating {color_name} line detection...")
+    print(f"Place the camera to view the {color_name} line and press 'c' to capture and calibrate.")
+    print("Press 'q' to skip calibration for this color.")
+    
+    # Define initial broad HSV ranges for each color
+    initial_ranges = {
+        'red': [([0, 100, 100], [10, 255, 255]), ([160, 100, 100], [180, 255, 255])],
+        'blue': [([90, 100, 50], [130, 255, 255])],
+        'green': [([35, 100, 50], [85, 255, 255])],
+        'yellow': [([20, 100, 100], [40, 255, 255])],
+        'black': [([0, 0, 0], [180, 100, 80])]
+    }
     
     while True:
         frame = picam2.capture_array()
@@ -236,33 +255,38 @@ def calibrate_black_line(picam2, color_ranges):
         else:
             roi = frame
             
-        cv2.putText(frame, "Press 'c' to calibrate black line", (10, 30),
+        cv2.putText(frame, f"Press 'c' to calibrate {color_name} line", (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
         
         cv2.imshow("Calibration", frame)
         key = cv2.waitKey(1) & 0xFF
         
         if key == ord('q'):
+            print(f"Skipped calibration for {color_name}.")
             cv2.destroyWindow("Calibration")
-            return
+            return False
             
         if key == ord('c'):
             # Convert ROI to HSV
             hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
             
-            # Create a mask for black pixels (start with very broad range)
-            black_mask = cv2.inRange(hsv_roi, np.array([0, 0, 0]), np.array([180, 100, 80]))
+            # Create a mask using initial broad range
+            color_mask = np.zeros(hsv_roi.shape[:2], dtype=np.uint8)
+            for lower, upper in initial_ranges[color_name]:
+                lower = np.array(lower, dtype=np.uint8)
+                upper = np.array(upper, dtype=np.uint8)
+                color_mask = cv2.bitwise_or(color_mask, cv2.inRange(hsv_roi, lower, upper))
             
             # Find contours in the mask
-            contours, _ = cv2.findContours(black_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            contours, _ = cv2.findContours(color_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
             if contours:
-                # Find the largest contour (black line)
-                black_contour = max(contours, key=cv2.contourArea)
-                if cv2.contourArea(black_contour) > MIN_CONTOUR_AREA:
+                # Find the largest contour
+                color_contour = max(contours, key=cv2.contourArea)
+                if cv2.contourArea(color_contour) > MIN_CONTOUR_AREA:
                     # Create a mask from the contour
-                    mask = np.zeros_like(black_mask)
-                    cv2.drawContours(mask, [black_contour], -1, 255, -1)
+                    mask = np.zeros_like(color_mask)
+                    cv2.drawContours(mask, [color_contour], -1, 255, -1)
                     
                     # Find the HSV range of pixels in the contour
                     roi_pixels = hsv_roi[mask == 255]
@@ -270,34 +294,45 @@ def calibrate_black_line(picam2, color_ranges):
                         h_min, s_min, v_min = np.min(roi_pixels, axis=0)
                         h_max, s_max, v_max = np.max(roi_pixels, axis=0)
                         
-                        # Apply some margins
+                        # Apply margins
                         h_min = max(0, h_min - 10)
                         s_min = max(0, s_min - 10)
                         v_min = max(0, v_min - 10)
                         h_max = min(179, h_max + 10)
-                        s_max = min(255, s_max + 40)  # More margin for saturation
-                        v_max = min(255, v_max + 40)  # More margin for value
+                        s_max = min(255, s_max + 40)
+                        v_max = min(255, v_max + 40)
                         
-                        # Update black color range
-                        color_ranges['black'] = [([h_min, s_min, v_min], [h_max, s_max, v_max])]
+                        # Update color range
+                        if color_name == 'red':
+                            # Split into two ranges for red
+                            color_ranges['red'] = [
+                                ([0, s_min, v_min], [min(10, h_max), s_max, v_max]),
+                                ([max(170, h_min), s_min, v_min], [180, s_max, v_max])
+                            ]
+                        else:
+                            color_ranges[color_name] = [([h_min, s_min, v_min], [h_max, s_max, v_max])]
                         
-                        print(f"Updated black line HSV range: ({h_min}, {s_min}, {v_min}) to ({h_max}, {s_max}, {v_max})")
+                        print(f"Updated {color_name} line HSV range: ({h_min}, {s_min}, {v_min}) to ({h_max}, {s_max}, {v_max})")
                         
                         # Show the calibrated mask
-                        calibrated_mask = cv2.inRange(hsv_roi, np.array([h_min, s_min, v_min]), np.array([h_max, s_max, v_max]))
-                        cv2.imshow("Calibrated Black Line Mask", calibrated_mask)
+                        calibrated_mask = np.zeros(hsv_roi.shape[:2], dtype=np.uint8)
+                        for lower, upper in color_ranges[color_name]:
+                            lower = np.array(lower, dtype=np.uint8)
+                            upper = np.array(upper, dtype=np.uint8)
+                            calibrated_mask = cv2.bitwise_or(calibrated_mask, cv2.inRange(hsv_roi, lower, upper))
+                        
+                        cv2.imshow(f"Calibrated {color_name.capitalize()} Line Mask", calibrated_mask)
                         cv2.waitKey(2000)
-                        cv2.destroyWindow("Calibrated Black Line Mask")
-                        break
+                        cv2.destroyWindow(f"Calibrated {color_name.capitalize()} Line Mask")
+                        cv2.destroyWindow("Calibration")
+                        return True
                     else:
-                        print("Could not find black pixels in the contour. Please try again.")
+                        print(f"Could not find {color_name} pixels in the contour. Please try again.")
                 else:
-                    print("Black line contour too small. Please try again.")
+                    print(f"{color_name.capitalize()} line contour too small. Please try again.")
             else:
-                print("No black line detected. Please try again.")
+                print(f"No {color_name} line detected. Please try again.")
                 
-    cv2.destroyWindow("Calibration")
-
 # Refined line detection function
 def detect_line(frame, color_priorities, color_ranges):
     # Apply ROI if enabled
@@ -363,7 +398,6 @@ def detect_line(frame, color_priorities, color_ranges):
                 max_area = area
                 best_contour = largest_contour
                 best_color = color_name
-            # We don't break here anymore - we want to find the highest priority color with usable contour
 
     if best_contour is not None:
         M = cv2.moments(best_contour)
@@ -440,15 +474,25 @@ def main():
     # Load calibrated color ranges
     color_ranges = load_color_calibration()
     
+    # Calibrate all colors
+    colors_to_calibrate = ['red', 'blue', 'green', 'yellow', 'black']
+    print("\nStarting calibration for all colors...")
+    for color in colors_to_calibrate:
+        success = calibrate_color(picam2, color_ranges, color)
+        if success:
+            print(f"Calibration for {color} completed.")
+        else:
+            print(f"Using existing or default range for {color}.")
+    
+    # Save the updated color ranges
+    save_color_calibration(color_ranges)
+    
     # Get user's color priority choices
     color_priorities = get_color_choices()
     if color_priorities is None:
         print("Program terminated by user.")
         GPIO.cleanup()
         return
-    
-    # Offer calibration
-    calibrate_black_line(picam2, color_ranges)
     
     print("Line follower with color detection started. Press 'q' in the display window or Ctrl+C to stop.")
     
@@ -466,8 +510,14 @@ def main():
             if key == ord('q'):
                 break
             elif key == ord('c'):
-                # Allow recalibration during runtime
-                calibrate_black_line(picam2, color_ranges)
+                # Allow recalibration during runtime for all colors
+                for color in colors_to_calibrate:
+                    success = calibrate_color(picam2, color_ranges, color)
+                    if success:
+                        print(f"Recalibration for {color} completed.")
+                    else:
+                        print(f"Skipped recalibration for {color}.")
+                save_color_calibration(color_ranges)
             
             if line_found:
                 # Line is detected (can be any color including black)
