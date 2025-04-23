@@ -21,8 +21,7 @@ WHEEL_CIRCUMFERENCE = np.pi * WHEEL_DIAMETER  # cm
 
 # Line following parameters
 BASE_SPEED = 45           # Base motor speed (0-100)
-TURN	# Line following parameters
-TURN_SPEED = 60           # Speed for pivot turns (0-100)
+TURN_SPEED = 60           # Speed for pivot turns (0-100)TURN_SPEED = 60           # Speed for pivot turns (0-100)
 MIN_CONTOUR_AREA = 800     # Minimum area for valid contours
 FRAME_WIDTH = 640          # Camera frame width
 FRAME_HEIGHT = 480         # Camera frame height
