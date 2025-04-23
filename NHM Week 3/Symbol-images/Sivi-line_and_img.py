@@ -256,6 +256,7 @@ def is_contour_complete(contour, frame_width, frame_height, margin=5):
             y + h < frame_height - margin)
 
 # Line Detection Function (No ROI)
+# Line Detection Function (No ROI)
 def detect_line(frame, color_priorities, color_ranges):
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     center_x = FRAME_WIDTH // 2
@@ -351,13 +352,15 @@ def detect_line(frame, color_priorities, color_ranges):
             cv2.drawContours(best_line_contour_display, [best_contour], -1, contour_color, 2)
             cv2.imshow("Best Line Contour", best_line_contour_display)
             
-            return error, True, best_color, all_available_colors, frame, line_y_top, line_y_bottom
-    return 0, False, None, [], frame, line_y_top, line_y_bottom
+            return error, True, best_color, all_available_colors, frame, line_y_top, line_y_bottom, thresh
+    return 0, False, None, [], frame, line_y_top, line_y_bottom, thresh
 
+
+# Combined Detection and Line Following with Contour and Color Validation
 # Combined Detection and Line Following with Contour and Color Validation
 def detect_images_shapes_and_line(frame, prev_detections, reference_data, color_priorities, color_ranges, right_pwm, left_pwm, pause_state, max_len=5):
     # Line detection
-    error, line_found, detected_color, available_colors, _, line_y_top, line_y_bottom = detect_line(frame, color_priorities, color_ranges)
+    error, line_found, detected_color, available_colors, _, line_y_top, line_y_bottom, thresh = detect_line(frame, color_priorities, color_ranges)
     
     detected_name = None
     label = "Detected: None"
@@ -372,22 +375,14 @@ def detect_images_shapes_and_line(frame, prev_detections, reference_data, color_
         if shape_roi_y_end <= shape_roi_y_start + 50:  # Ensure minimum height
             shape_roi_y_end = DEFAULT_SHAPE_ROI_HEIGHT  # Fallback to default height
         shape_roi_frame = frame[shape_roi_y_start:shape_roi_y_end, shape_roi_x_start:shape_roi_x_end]
+        # Crop the threshold image to the shape ROI
+        shape_thresh = thresh[shape_roi_y_start:shape_roi_y_end, shape_roi_x_start:shape_roi_x_end]
         
         # Draw ROI rectangle for visualization
         cv2.rectangle(frame, (shape_roi_x_start, shape_roi_y_start), (shape_roi_x_end, shape_roi_y_end), (0, 255, 255), 2)
         
-        # Preprocess ROI for shape detection
-        gray = cv2.cvtColor(shape_roi_frame, cv2.COLOR_BGR2GRAY)
-        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-        _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        cv2.imshow("Shape Threshold", thresh)
-        
-        edges = cv2.Canny(thresh, 30, 200)
-        cv2.imshow("Shape Edges", edges)
-        
-        kernel = np.ones((3,3), np.uint8)
-        edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
-        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # Use the threshold image directly for contour detection
+        contours, _ = cv2.findContours(shape_thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
         # Create an image to show all shape contours
         shape_contour_display = np.zeros((shape_roi_y_end - shape_roi_y_start, SHAPE_ROI_WIDTH, 3), dtype=np.uint8)
