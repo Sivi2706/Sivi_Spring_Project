@@ -667,6 +667,7 @@ def main():
             
             if frame_count % symbol_skip == 0:
                 symbol_roi = frame[0:SYMBOL_ROI_HEIGHT, 0:FRAME_WIDTH]
+                # Updated to handle four return values
                 output_frame, detected_symbol, symbol_mask, shape_outline_mask = detect_images(symbol_roi, prev_detections, reference_images, orb)
                 frame[0:SYMBOL_ROI_HEIGHT, 0:FRAME_WIDTH] = output_frame
                 last_announced = announce_symbol(detected_symbol, last_announced)
@@ -681,7 +682,7 @@ def main():
             symbol_mask_colored = cv2.cvtColor(symbol_mask, cv2.COLOR_GRAY2BGR)
             cv2.imshow("Symbol Mask", symbol_mask_colored)
             shape_outline_mask_colored = cv2.cvtColor(shape_outline_mask, cv2.COLOR_GRAY2BGR)
-            cv2.imshow("Shape Outline Mask", shape_outline_mask_colored)  # New window for shape outline
+            cv2.imshow("Shape Outline Mask", shape_outline_mask_colored)
             
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
@@ -714,14 +715,22 @@ def main():
         print("\nProgram stopped by user")
     except Exception as e:
         print(f"Unexpected error: {e}")
+        import traceback
+        traceback.print_exc()  # Print full stack trace for debugging
     finally:
         stop_motors(left_pwm, right_pwm, servo_pwm)
-        left_pwm.stop()
-        right_pwm.stop()
-        servo_pwm.stop()
+        try:
+            left_pwm.stop()
+            right_pwm.stop()
+            servo_pwm.stop()
+        except Exception as pwm_error:
+            print(f"PWM cleanup error: {pwm_error}")
         cv2.destroyAllWindows()
         picam2.stop()
-        GPIO.cleanup()
+        try:
+            GPIO.cleanup()
+        except Exception as gpio_error:
+            print(f"GPIO cleanup error: {gpio_error}")
         print("Resources released")
 
 if __name__ == "__main__":
