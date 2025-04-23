@@ -21,7 +21,7 @@ WHEEL_CIRCUMFERENCE = np.pi * WHEEL_DIAMETER  # cm
 # Line following parameters
 BASE_SPEED = 45           # Base motor speed (0-100)
 TURN_SPEED = 60           # Speed for pivot turns (0-100)
-MIN_CONTOUR_AREA = 800     # Minimum area for valid contours
+MIN_CONTOUR_AREA = 500     # Reduced to better detect smaller lines
 FRAME_WIDTH = 640          # Camera frame width
 FRAME_HEIGHT = 480         # Camera frame height
 
@@ -52,7 +52,7 @@ default_color_ranges = {
         ([170, 167, 154], [180, 247, 234])  # Upper red range
     ],
     'blue': [
-        ([100, 167, 60], [130, 255, 95])    # Blue range
+        ([100, 100, 50], [130, 255, 255])   # Narrowed blue range to match observed HSV (114, 138, 85)
     ],
     'green': [
         ([40, 180, 110], [75, 255, 190])    # Green range
@@ -236,10 +236,10 @@ def calibrate_color(picam2, color_ranges, color_name):
     print(f"Place the camera to view the {color_name} line and press 'c' to capture and calibrate.")
     print("Press 'q' to skip calibration for this color.")
     
-    # Define initial broad HSV ranges for each color
+    # Define initial broad HSV ranges for each color (tightened for blue)
     initial_ranges = {
         'red': [([0, 100, 100], [10, 255, 255]), ([160, 100, 100], [180, 255, 255])],
-        'blue': [([90, 100, 50], [130, 255, 255])],
+        'blue': [([100, 100, 50], [130, 255, 255])],  # Narrower initial range for blue
         'green': [([35, 100, 50], [85, 255, 255])],
         'yellow': [([20, 100, 100], [40, 255, 255])],
         'black': [([0, 0, 0], [180, 100, 80])]
