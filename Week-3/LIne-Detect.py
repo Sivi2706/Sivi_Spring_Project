@@ -201,10 +201,11 @@ def calibrate_black_line(picam2, color_ranges):
     cv2.destroyWindow("Calibration")
 
 # Refined line detection function with angle determination
+# Refined line detection function with angle determination
 def detect_line(frame, color_priorities, color_ranges):
     if USE_TOP_ROI:
         roi_y_end = TOP_ROI_HEIGHT
-        roi = frame[0:roi_y_end, 0:FRAME_WIDTH34]
+        roi = frame[0:roi_y_end, 0:FRAME_WIDTH]
         hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
     else:
         roi = frame
@@ -274,7 +275,7 @@ def detect_line(frame, color_priorities, color_ranges):
             if USE_TOP_ROI:
                 cv2.drawContours(frame[0:TOP_ROI_HEIGHT, 0:FRAME_WIDTH], 
                                [best_contour], -1, contour_color, 2)
-                cv2.circle(frame, (best_cx, best_cy), 5, (255, 0, 0), -=.0, -1)
+                cv2.circle(frame, (best_cx, best_cy), 5, (255, 0, 0), -1)
             else:
                 cv2.drawContours(frame, [best_contour], -1, contour_color, 2)
                 cv2.circle(frame, (best_cx, best_cy), 5, (255, 0, 0), -1)
