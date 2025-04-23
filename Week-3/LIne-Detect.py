@@ -176,7 +176,7 @@ def setup_camera():
 
     # Disable automatic white balance and set manual gains
     picam2.set_controls({
-        "AwbEnable": turning off AWB
+        "AwbEnable": 0,  # Disable AWB
         "ColourGains": (1.5, 2.0)  # (red_gain, blue_gain) - increase blue gain to correct blue colors
     })
 
