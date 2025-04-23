@@ -1,0 +1,497 @@
+import RPi.GPIO as GPIO
+import time
+import numpy as np
+import cv2
+import json
+import os
+from picamera2 import Picamera2
+
+# Define GPIO pins (updated to match the provided code)
+IN1, IN2 = 22, 27         # Left motor control
+IN3, IN4 = 17, 4          # Right motor control
+ENA, ENB = 13, 12         # PWM pins for motors
+
+# Constants
+WHEEL_DIAMETER = 4.05      # cm
+PULSES_PER_REVOLUTION = 20
+WHEEL_CIRCUMFERENCE = np.pi * WHEEL_DIAMETER  # cm
+
+# Line following parameters
+BASE_SPEED = 45           # Base motor speed (0-100)
+TURN_SPEED = 60           # Speed for pivot turns (0-100)
+MIN_CONTOUR_AREA = 800     # Minimum area for valid contours
+FRAME_WIDTH = 640          # Camera frame width
+FRAME_HEIGHT = 480         # Camera frame height
+
+# Threshold for turning
+TURN_THRESHOLD = 100       # Error threshold for pivoting
+
+# Recovery parameters
+REVERSE_SPEED = 40         # Speed when reversing
+
+# ROI parameters
+USE_ROI = True             # Enable ROI for more focused line detection
+ROI_HEIGHT = 150           # Height of the ROI from the bottom of the frame
+
+# PWM settings
+PWM_FREQ = 1000           # Motor PWM frequency
+SERVO_FREQ = 50           # Servo PWM frequency (unused but preserved)
+SERVO_NEUTRAL = 7.5       # Neutral position (unused but preserved)
+
+# Calibration file
+CALIBRATION_FILE = "color_calibration.json"
+
+# Default color ranges (HSV format) in case calibration file is not found
+default_color_ranges = {
+    'red': [
+        ([0, 167, 154], [10, 247, 234]),    # Lower red range
+        ([170, 167, 154], [180, 247, 234])  # Upper red range
+    ],
+    'blue': [
+        ([90, 50, 50], [130, 255, 255])    # Adjusted blue range
+    ],
+    'green': [
+        ([40, 180, 110], [75, 255, 190])    # Green range
+    ],
+    'yellow': [
+        ([25, 150, 150], [35, 255, 255])    # Yellow range
+    ],
+    'black': [
+        ([0, 0, 0], [179, 100, 75])         # Black range
+    ]
+}
+
+# Function to initialize Raspberry Pi Camera
+def initialize_camera():
+    try:
+        picam2 = Picamera2()
+        picam2.configure(picam2.create_preview_configuration(main={"size": (FRAME_WIDTH, FRAME_HEIGHT)}))
+        picam2.start()
+        time.sleep(2)  # Allow camera to warm up
+        return picam2
+    except RuntimeError as e:
+        print(f"Camera initialization failed: {e}")
+        return None
+
+# Function to load calibrated color ranges
+def load_color_calibration():
+    """Load calibrated color ranges from file or return defaults"""
+    if os.path.exists(CALIBRATION_FILE):
+        try:
+            with open(CALIBRATION_FILE, 'r') as f:
+                loaded_ranges = json.load(f)
+                print("Loaded calibrated color ranges from file.")
+                return loaded_ranges
+        except Exception as e:
+            print(f"Error loading calibration file: {e}")
+            print("Using default color ranges.")
+    else:
+        print("No calibration file found. Using default color ranges.")
+    return default_color_ranges
+
+# Function to save calibrated color ranges
+def save_color_calibration(color_ranges):
+    """Save calibrated color ranges to file"""
+    try:
+        with open(CALIBRATION_FILE, 'w') as f:
+            json.dump(color_ranges, f, indent=4)
+        print(f"Saved calibrated color ranges to {CALIBRATION_FILE}")
+    except Exception as e:
+        print(f"Error saving calibration file: {e}")
+
+# Function to get user's color priority choice
+def get_color_choices():
+    print("\nAvailable line colors to follow (priority order):")
+    print("r = red (highest priority)")
+    print("b = blue")
+    print("g = green")
+    print("y = yellow")
+    print("k = black (lowest priority)")
+    print("q = quit program")
+    print("\nEnter colors in priority order (e.g., 'rb' for red then blue)")
+    
+    color_map = {
+        'r': 'red',
+        'b': 'blue',
+        'g': 'green',
+        'y': 'yellow',
+        'k': 'black'
+    }
+    
+    while True:
+        choices = input("\nEnter color priorities (e.g., 'rbk'): ").lower()
+        if choices == 'q':
+            return None
+            
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_choices = []
+        for c in choices:
+            if c in color_map and c not in seen:
+                seen.add(c)
+                unique_choices.append(c)
+                
+        if unique_choices:
+            selected_colors = [color_map[c] for c in unique_choices]
+            if 'black' not in selected_colors:
+                selected_colors.append('black')
+            print(f"Priority order: {' > '.join(selected_colors)}")
+            return selected_colors
+        else:
+            print("Invalid choice. Please try again.")
+
+# GPIO Setup (updated to match the provided code)
+def setup_gpio():
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setwarnings(False)
+
+    # Setup motor pins
+    GPIO.setup(IN1, GPIO.OUT)
+    GPIO.setup(IN2, GPIO.OUT)
+    GPIO.setup(IN3, GPIO.OUT)
+    GPIO.setup(IN4, GPIO.OUT)
+    GPIO.setup(ENA, GPIO.OUT)
+    GPIO.setup(ENB, GPIO.OUT)
+
+    right_pwm = GPIO.PWM(ENA, PWM_FREQ)  # Right motor
+    left_pwm = GPIO.PWM(ENB, PWM_FREQ)   # Left motor
+    right_pwm.start(0)
+    left_pwm.start(0)
+
+    return right_pwm, left_pwm
+
+# Motor control functions (updated to match the provided code)
+def turn_right(right_pwm, left_pwm):
+    GPIO.output(IN1, GPIO.HIGH)
+    GPIO.output(IN2, GPIO.LOW)
+    GPIO.output(IN3, GPIO.HIGH)
+    GPIO.output(IN4, GPIO.LOW)
+    right_pwm.ChangeDutyCycle(TURN_SPEED)
+    left_pwm.ChangeDutyCycle(TURN_SPEED)
+
+def turn_left(right_pwm, left_pwm):
+    GPIO.output(IN1, GPIO.LOW)
+    GPIO.output(IN2, GPIO.HIGH)
+    GPIO.output(IN3, GPIO.LOW)
+    GPIO.output(IN4, GPIO.HIGH)
+    right_pwm.ChangeDutyCycle(TURN_SPEED)
+    left_pwm.ChangeDutyCycle(TURN_SPEED)
+
+def move_forward(right_pwm, left_pwm):
+    GPIO.output(IN1, GPIO.HIGH)
+    GPIO.output(IN2, GPIO.LOW)
+    GPIO.output(IN3, GPIO.LOW)
+    GPIO.output(IN4, GPIO.HIGH)
+    right_pwm.ChangeDutyCycle(BASE_SPEED)
+    left_pwm.ChangeDutyCycle(BASE_SPEED)
+
+def move_backward(right_pwm, left_pwm):
+    GPIO.output(IN1, GPIO.LOW)
+    GPIO.output(IN2, GPIO.HIGH)
+    GPIO.output(IN3, GPIO.HIGH)
+    GPIO.output(IN4, GPIO.LOW)
+    right_pwm.ChangeDutyCycle(REVERSE_SPEED)
+    left_pwm.ChangeDutyCycle(REVERSE_SPEED)
+
+def stop_motors(right_pwm, left_pwm):
+    right_pwm.ChangeDutyCycle(0)
+    left_pwm.ChangeDutyCycle(0)
+    GPIO.output(IN1, GPIO.LOW)
+    GPIO.output(IN2, GPIO.LOW)
+    GPIO.output(IN3, GPIO.LOW)
+    GPIO.output(IN4, GPIO.LOW)
+
+# Function to manually calibrate a specific color through user input
+def calibrate_color(picam2, color_ranges, color_name):
+    print(f"\nCalibrating {color_name} line detection...")
+    print(f"Place the camera to view the {color_name} line.")
+    print("You will be prompted to enter the HSV ranges manually.")
+    print("Press 'q' to skip calibration for this color, or any other key to proceed.")
+
+    # Display the camera feed so the user can see the color
+    while True:
+        frame = picam2.capture_array()
+        
+        # Ensure frame is in BGR format
+        if len(frame.shape) == 2:  # Grayscale
+            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+        elif frame.shape[2] == 4:  # RGBA
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+        
+        cv2.putText(frame, f"Calibrating {color_name} - Press any key to proceed (q to skip)", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+        
+        cv2.imshow("Calibration", frame)
+        key = cv2.waitKey(1) & 0xFF
+        
+        if key == ord('q'):
+            print(f"Skipped calibration for {color_name}.")
+            cv2.destroyWindow("Calibration")
+            return False
+        elif key != 0xFF:  # Any key pressed except 'q'
+            break
+
+    # Prompt user for HSV values
+    if color_name == 'red':
+        print("\nRed requires two HSV ranges due to hue wrap-around (0-10 and 170-180).")
+        print("First range (H: 0 to 10):")
+        h_min_1 = int(input("Enter lower Hue (0-10): "))
+        h_max_1 = int(input("Enter upper Hue (0-10): "))
+        s_min_1 = int(input("Enter lower Saturation (0-255): "))
+        s_max_1 = int(input("Enter upper Saturation (0-255): "))
+        v_min_1 = int(input("Enter lower Value (0-255): "))
+        v_max_1 = int(input("Enter upper Value (0-255): "))
+        
+        print("\nSecond range (H: 170 to 180):")
+        h_min_2 = int(input("Enter lower Hue (170-180): "))
+        h_max_2 = int(input("Enter upper Hue (170-180): "))
+        s_min_2 = int(input("Enter lower Saturation (0-255): "))
+        s_max_2 = int(input("Enter upper Saturation (0-255): "))
+        v_min_2 = int(input("Enter lower Value (0-255): "))
+        v_max_2 = int(input("Enter upper Value (0-255): "))
+        
+        # Validate inputs
+        h_min_1 = max(0, min(10, h_min_1))
+        h_max_1 = max(0, min(10, h_max_1))
+        h_min_2 = max(170, min(180, h_min_2))
+        h_max_2 = max(170, min(180, h_max_2))
+        s_min_1 = max(0, min(255, s_min_1))
+        s_max_1 = max(0, min(255, s_max_1))
+        v_min_1 = max(0, min(255, v_min_1))
+        v_max_1 = max(0, min(255, v_max_1))
+        s_min_2 = max(0, min(255, s_min_2))
+        s_max_2 = max(0, min(255, s_max_2))
+        v_min_2 = max(0, min(255, v_min_2))
+        v_max_2 = max(0, min(255, v_max_2))
+        
+        color_ranges['red'] = [
+            ([h_min_1, s_min_1, v_min_1], [h_max_1, s_max_1, v_max_1]),
+            ([h_min_2, s_min_2, v_min_2], [h_max_2, s_max_2, v_max_2])
+        ]
+        print(f"Red range 1: [{h_min_1}, {s_min_1}, {v_min_1}] to [{h_max_1}, {s_max_1}, {v_max_1}]")
+        print(f"Red range 2: [{h_min_2}, {s_min_2}, {v_min_2}] to [{h_max_2}, {s_max_2}, {v_max_2}]")
+    else:
+        print(f"\nEnter HSV range for {color_name}:")
+        print("Hue range: 0-179")
+        print("Saturation and Value range: 0-255")
+        h_min = int(input("Enter lower Hue (0-179): "))
+        h_max = int(input("Enter upper Hue (0-179): "))
+        s_min = int(input("Enter lower Saturation (0-255): "))
+        s_max = int(input("Enter upper Saturation (0-255): "))
+        v_min = int(input("Enter lower Value (0-255): "))
+        v_max = int(input("Enter upper Value (0-255): "))
+        
+        # Validate inputs
+        h_min = max(0, min(179, h_min))
+        h_max = max(0, min(179, h_max))
+        s_min = max(0, min(255, s_min))
+        s_max = max(0, min(255, s_max))
+        v_min = max(0, min(255, v_min))
+        v_max = max(0, min(255, v_max))
+        
+        color_ranges[color_name] = [([h_min, s_min, v_min], [h_max, s_max, v_max])]
+        print(f"{color_name.capitalize()} range: [{h_min}, {s_min}, {v_min}] to [{h_max}, {s_max}, {v_max}]")
+
+    # Verify the calibration by showing the mask
+    frame = picam2.capture_array()
+    if len(frame.shape) == 2:
+        frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+    elif frame.shape[2] == 4:
+        frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+    
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
+    for lower, upper in color_ranges[color_name]:
+        lower = np.array(lower, dtype=np.uint8)
+        upper = np.array(upper, dtype=np.uint8)
+        mask = cv2.bitwise_or(mask, cv2.inRange(hsv, lower, upper))
+    
+    cv2.imshow(f"Calibrated {color_name.capitalize()} Line Mask", mask)
+    cv2.waitKey(2000)
+    cv2.destroyWindow(f"Calibrated {color_name.capitalize()} Line Mask")
+    cv2.destroyWindow("Calibration")
+    return True
+
+# Line detection function
+def detect_line(frame, color_priorities, color_ranges):
+    # Ensure frame is in BGR format
+    if len(frame.shape) == 2:  # Grayscale
+        frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+    elif frame.shape[2] == 4:  # RGBA
+        frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+    
+    # Apply ROI if enabled
+    if USE_ROI:
+        roi_y_start = FRAME_HEIGHT - ROI_HEIGHT
+        roi = frame[roi_y_start:FRAME_HEIGHT, 0:FRAME_WIDTH]
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    else:
+        roi = frame
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    
+    center_x = FRAME_WIDTH // 2
+    cv2.line(frame, (center_x, 0), (center_x, FRAME_HEIGHT), (0, 0, 255), 2)
+    
+    if USE_ROI:
+        cv2.rectangle(frame, (0, roi_y_start), (FRAME_WIDTH, FRAME_HEIGHT), (255, 255, 0), 2)
+
+    best_contour = None
+    best_color = None
+    best_cx, best_cy = -1, -1
+    max_area = 0
+    valid_contours = {}
+    all_available_colors = []
+
+    for color_name in color_priorities:
+        color_mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
+        for lower, upper in color_ranges.get(color_name, []):
+            lower = np.array(lower, dtype=np.uint8)
+            upper = np.array(upper, dtype=np.uint8)
+            color_mask = cv2.bitwise_or(color_mask, cv2.inRange(hsv, lower, upper))
+        
+        kernel = np.ones((5, 5), np.uint8)
+        color_mask = cv2.morphologyEx(color_mask, cv2.MORPH_CLOSE, kernel)
+        
+        contours, _ = cv2.findContours(color_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        valid = [cnt for cnt in contours if cv2.contourArea(cnt) > MIN_CONTOUR_AREA]
+
+        if valid:
+            valid_contours[color_name] = valid
+            all_available_colors.append(color_name)
+
+    for color_name in color_priorities:
+        if color_name in valid_contours:
+            largest_contour = max(valid_contours[color_name], key=cv2.contourArea)
+            area = cv2.contourArea(largest_contour)
+            if area > max_area:
+                max_area = area
+                best_contour = largest_contour
+                best_color = color_name
+
+    if best_contour is not None:
+        M = cv2.moments(best_contour)
+        if M["m00"] != 0:
+            cx = int(M["m10"] / M["m00"])
+            cy = int(M["m01"] / M["m00"])
+            best_cx = cx if not USE_ROI else cx
+            best_cy = cy if not USE_ROI else cy + (FRAME_HEIGHT - ROI_HEIGHT)
+
+            contour_color = (0, 255, 0) if best_color != 'black' else (128, 128, 128)
+            if USE_ROI:
+                cv2.drawContours(frame[FRAME_HEIGHT-ROI_HEIGHT:FRAME_HEIGHT, 0:FRAME_WIDTH], 
+                                [best_contour], -1, contour_color, 2)
+                cv2.circle(frame, (best_cx, best_cy), 5, (255, 0, 0), -1)
+            else:
+                cv2.drawContours(frame, [best_contour], -1, contour_color, 2)
+                cv2.circle(frame, (best_cx, best_cy), 5, (255, 0, 0), -1)
+                
+            cv2.line(frame, (center_x, best_cy), (best_cx, best_cy), (255, 0, 0), 2)
+            error = best_cx - center_x
+
+            hsv_value = hsv[cy, cx] if USE_ROI else cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)[best_cy, best_cx]
+            h, s, v = hsv_value
+
+            available_colors_text = "Available: " + ", ".join(all_available_colors)
+            cv2.putText(frame, available_colors_text, (10, 90), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+            text_color = {
+                'red': (0, 0, 255),
+                'green': (0, 255, 0),
+                'blue': (255, 0, 0),
+                'yellow': (0, 255, 255),
+                'black': (128, 128, 128)
+            }.get(best_color, (255, 255, 255))
+                
+            cv2.putText(frame, f"{best_color.capitalize()} Line, Error: {error}", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, text_color, 2)
+            cv2.putText(frame, f"HSV: ({h}, {s}, {v})", (10, 60),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, text_color, 2)
+
+            return error, True, best_color, all_available_colors
+
+    return 0, False, None, []
+
+# Main function
+def main():
+    right_pwm, left_pwm = setup_gpio()
+    picam2 = initialize_camera()
+    if picam2 is None:
+        print("Exiting program. Camera could not be initialized.")
+        GPIO.cleanup()
+        return
+    
+    # Load or initialize color ranges
+    color_ranges = load_color_calibration()
+    
+    # Calibrate all colors before starting
+    colors_to_calibrate = ['red', 'blue', 'green', 'yellow', 'black']
+    print("\nStarting calibration for all colors...")
+    for color in colors_to_calibrate:
+        success = calibrate_color(picam2, color_ranges, color)
+        if success:
+            print(f"Calibration for {color} completed.")
+        else:
+            print(f"Using existing or default range for {color}.")
+    
+    # Save calibrated ranges
+    save_color_calibration(color_ranges)
+    
+    # Get color priorities
+    color_priorities = get_color_choices()
+    if color_priorities is None:
+        print("Program terminated by user.")
+        GPIO.cleanup()
+        return
+    
+    print("Line follower started. Press 'q' to quit or 'c' to recalibrate.")
+    
+    recovery_mode = False
+    
+    try:
+        while True:
+            frame = picam2.capture_array()
+            error, line_found, detected_color, available_colors = detect_line(frame, color_priorities, color_ranges)
+            
+            cv2.imshow("Line Follower", frame)
+            key = cv2.waitKey(1) & 0xFF
+            
+            if key == ord('q'):
+                break
+            elif key == ord('c'):
+                for color in colors_to_calibrate:
+                    success = calibrate_color(picam2, color_ranges, color)
+                    if success:
+                        print(f"Recalibration for {color} completed.")
+                    else:
+                        print(f"Skipped recalibration for {color}.")
+                save_color_calibration(color_ranges)
+            
+            if line_found:
+                recovery_mode = False
+                if error > TURN_THRESHOLD:
+                    turn_right(right_pwm, left_pwm)
+                elif error < -TURN_THRESHOLD:
+                    turn_left(right_pwm, left_pwm)
+                else:
+                    move_forward(right_pwm, left_pwm)
+            else:
+                if not recovery_mode:
+                    print("No line detected. Starting recovery...")
+                    recovery_mode = True
+                move_backward(right_pwm, left_pwm)
+                time.sleep(0.1)
+                
+    except KeyboardInterrupt:
+        print("\nProgram stopped by user")
+    finally:
+        stop_motors(right_pwm, left_pwm)
+        right_pwm.stop()
+        left_pwm.stop()
+        cv2.destroyAllWindows()
+        picam2.stop()
+        GPIO.cleanup()
+        print("Resources released")
+        
+if __name__ == "__main__":
+    main()
