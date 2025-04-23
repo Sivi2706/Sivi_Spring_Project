@@ -55,7 +55,7 @@ default_color_ranges = {
         ([170, 167, 154], [180, 247, 234])  # Upper red range
     ],
     'blue': [
-        ([100, 167, 60], [130, 255, 95])    # Blue range
+        ([90, 50, 50], [130, 255, 255])    # Adjusted blue range
     ],
     'green': [
         ([40, 180, 110], [75, 255, 190])    # Green range
@@ -79,15 +79,6 @@ def initialize_camera():
     except RuntimeError as e:
         print(f"Camera initialization failed: {e}")
         return None
-
-# Function to ensure the frame is in BGR format
-def ensure_bgr(frame):
-    if len(frame.shape) == 2:  # Grayscale
-        return cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
-    elif frame.shape[2] == 4:  # RGBA
-        return cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
-    else:
-        return frame  # Assume it's already BGR
 
 # Function to load calibrated color ranges
 def load_color_calibration():
@@ -238,16 +229,16 @@ def stop_motors(left_pwm, right_pwm, servo_pwm):
     servo_pwm.ChangeDutyCycle(SERVO_NEUTRAL)
     print("Stopped")
 
-# Function to calibrate a specific color and record HSV values
+# Function to calibrate a specific color
 def calibrate_color(picam2, color_ranges, color_name):
     print(f"\nCalibrating {color_name} line detection...")
     print(f"Place the camera to view the {color_name} line and press 'c' to capture and calibrate.")
     print("Press 'q' to skip calibration for this color.")
     
-    # Define initial broad HSV ranges for each color
+    # Initial broad HSV ranges for calibration
     initial_ranges = {
         'red': [([0, 100, 100], [10, 255, 255]), ([160, 100, 100], [180, 255, 255])],
-        'blue': [([90, 100, 50], [130, 255, 255])],
+        'blue': [([90, 50, 50], [130, 255, 255])],
         'green': [([35, 100, 50], [85, 255, 255])],
         'yellow': [([20, 100, 100], [40, 255, 255])],
         'black': [([0, 0, 0], [180, 100, 80])]
@@ -255,109 +246,95 @@ def calibrate_color(picam2, color_ranges, color_name):
     
     while True:
         frame = picam2.capture_array()
-        frame = ensure_bgr(frame)  # Ensure frame is in BGR format
         
-        # Draw ROI if enabled
-        if USE_ROI:
-            roi_y_start = FRAME_HEIGHT - ROI_HEIGHT
-            cv2.rectangle(frame, (0, roi_y_start), (FRAME_WIDTH, FRAME_HEIGHT), (255, 255, 0), 2)
-            roi = frame[roi_y_start:FRAME_HEIGHT, 0:FRAME_WIDTH]
+        # Ensure frame is in BGR format
+        if len(frame.shape) == 2:  # Grayscale
+            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+        elif frame.shape[2] == 4:  # RGBA
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+        
+        # Use the entire frame for calibration
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        
+        # Create a mask using initial broad range
+        color_mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
+        for lower, upper in initial_ranges[color_name]:
+            lower = np.array(lower, dtype=np.uint8)
+            upper = np.array(upper, dtype=np.uint8)
+            color_mask = cv2.bitwise_or(color_mask, cv2.inRange(hsv, lower, upper))
+        
+        # Find contours in the mask
+        contours, _ = cv2.findContours(color_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        if contours:
+            # Find the largest contour
+            color_contour = max(contours, key=cv2.contourArea)
+            if cv2.contourArea(color_contour) > MIN_CONTOUR_AREA:
+                # Create a mask from the contour
+                mask = np.zeros_like(color_mask)
+                cv2.drawContours(mask, [color_contour], -1, 255, -1)
+                
+                # Get HSV pixels from the contour
+                hsv_pixels = hsv[mask == 255]
+                if len(hsv_pixels) > 0:
+                    h_min = np.min(hsv_pixels[:, 0])
+                    h_max = np.max(hsv_pixels[:, 0])
+                    s_min = np.min(hsv_pixels[:, 1])
+                    s_max = np.max(hsv_pixels[:, 1])
+                    v_min = np.min(hsv_pixels[:, 2])
+                    v_max = np.max(hsv_pixels[:, 2])
+                    
+                    # Apply margins
+                    h_min = max(0, h_min - 5)
+                    h_max = min(179, h_max + 5)
+                    s_min = max(0, s_min - 20)
+                    s_max = min(255, s_max + 20)
+                    v_min = max(0, v_min - 20)
+                    v_max = min(255, v_max + 20)
+                    
+                    # Update color range
+                    if color_name == 'red':
+                        # Handle red with two ranges
+                        if h_min < 10 and h_max > 170:
+                            color_ranges['red'] = [
+                                ([0, s_min, v_min], [10, s_max, v_max]),
+                                ([170, s_min, v_min], [180, s_max, v_max])
+                            ]
+                        else:
+                            color_ranges['red'] = [([h_min, s_min, v_min], [h_max, s_max, v_max])]
+                    else:
+                        color_ranges[color_name] = [([h_min, s_min, v_min], [h_max, s_max, v_max])]
+                    
+                    print(f"Updated {color_name} line HSV range: ({h_min}, {s_min}, {v_min}) to ({h_max}, {s_max}, {v_max})")
+                    
+                    # Show the calibrated mask
+                    calibrated_mask = cv2.inRange(hsv, np.array([h_min, s_min, v_min]), np.array([h_max, s_max, v_max]))
+                    cv2.imshow(f"Calibrated {color_name.capitalize()} Line Mask", calibrated_mask)
+                    cv2.waitKey(2000)
+                    cv2.destroyWindow(f"Calibrated {color_name.capitalize()} Line Mask")
+                    cv2.destroyWindow("Calibration")
+                    return True
+                else:
+                    print(f"No pixels found in {color_name} contour. Try again.")
+            else:
+                print(f"{color_name.capitalize()} contour too small. Try again.")
         else:
-            roi = frame
-            
-        cv2.putText(frame, f"Press 'c' to calibrate {color_name} line", (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+            print(f"No {color_name} line detected. Try again.")
         
         cv2.imshow("Calibration", frame)
         key = cv2.waitKey(1) & 0xFF
-        
         if key == ord('q'):
             print(f"Skipped calibration for {color_name}.")
             cv2.destroyWindow("Calibration")
             return False
-            
-        if key == ord('c'):
-            # Convert ROI to HSV
-            hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-            
-            # Create a mask using initial broad range
-            color_mask = np.zeros(hsv_roi.shape[:2], dtype=np.uint8)
-            for lower, upper in initial_ranges[color_name]:
-                lower = np.array(lower, dtype=np.uint8)
-                upper = np.array(upper, dtype=np.uint8)
-                color_mask = cv2.bitwise_or(color_mask, cv2.inRange(hsv_roi, lower, upper))
-            
-            # Find contours in the mask
-            contours, _ = cv2.findContours(color_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            if contours:
-                # Find the largest contour
-                color_contour = max(contours, key=cv2.contourArea)
-                if cv2.contourArea(color_contour) > MIN_CONTOUR_AREA:
-                    # Create a mask from the contour
-                    mask = np.zeros_like(color_mask)
-                    cv2.drawContours(mask, [color_contour], -1, 255, -1)
-                    
-                    # Record HSV values from pixels in the contour
-                    roi_pixels = hsv_roi[mask == 255]
-                    if len(roi_pixels) > 0:
-                        if color_name == 'red':
-                            # Handle red with two ranges
-                            lower_red_pixels = roi_pixels[roi_pixels[:, 0] <= 10]
-                            upper_red_pixels = roi_pixels[roi_pixels[:, 0] >= 170]
-                            
-                            if len(lower_red_pixels) > 0:
-                                h_min_l = max(0, np.min(lower_red_pixels[:, 0]) - 5)
-                                h_max_l = min(10, np.max(lower_red_pixels[:, 0]) + 5)
-                                s_min_l = max(0, np.min(lower_red_pixels[:, 1]) - 20)
-                                s_max_l = min(255, np.max(lower_red_pixels[:, 1]) + 20)
-                                v_min_l = max(0, np.min(lower_red_pixels[:, 2]) - 20)
-                                v_max_l = min(255, np.max(lower_red_pixels[:, 2]) + 20)
-                                color_ranges['red'][0] = ([h_min_l, s_min_l, v_min_l], [h_max_l, s_max_l, v_max_l])
-                                print(f"Lower red range: [{h_min_l}, {s_min_l}, {v_min_l}] to [{h_max_l}, {s_max_l}, {v_max_l}]")
-                            
-                            if len(upper_red_pixels) > 0:
-                                h_min_u = max(170, np.min(upper_red_pixels[:, 0]) - 5)
-                                h_max_u = min(180, np.max(upper_red_pixels[:, 0]) + 5)
-                                s_min_u = max(0, np.min(upper_red_pixels[:, 1]) - 20)
-                                s_max_u = min(255, np.max(upper_red_pixels[:, 1]) + 20)
-                                v_min_u = max(0, np.min(upper_red_pixels[:, 2]) - 20)
-                                v_max_u = min(255, np.max(upper_red_pixels[:, 2]) + 20)
-                                color_ranges['red'][1] = ([h_min_u, s_min_u, v_min_u], [h_max_u, s_max_u, v_max_u])
-                                print(f"Upper red range: [{h_min_u}, {s_min_u}, {v_min_u}] to [{h_max_u}, {s_max_u}, {v_max_u}]")
-                        else:
-                            # Single range for other colors
-                            h_min = max(0, np.min(roi_pixels[:, 0]) - 10)
-                            h_max = min(179, np.max(roi_pixels[:, 0]) + 10)
-                            s_min = max(0, np.min(roi_pixels[:, 1]) - 20)
-                            s_max = min(255, np.max(roi_pixels[:, 1]) + 20)
-                            v_min = max(0, np.min(roi_pixels[:, 2]) - 20)
-                            v_max = min(255, np.max(roi_pixels[:, 2]) + 20)
-                            color_ranges[color_name] = [([h_min, s_min, v_min], [h_max, s_max, v_max])]
-                            print(f"{color_name.capitalize()} range: [{h_min}, {s_min}, {v_min}] to [{h_max}, {s_max}, {v_max}]")
-                        
-                        # Show the calibrated mask for verification
-                        calibrated_mask = np.zeros(hsv_roi.shape[:2], dtype=np.uint8)
-                        for lower, upper in color_ranges[color_name]:
-                            lower = np.array(lower, dtype=np.uint8)
-                            upper = np.array(upper, dtype=np.uint8)
-                            calibrated_mask = cv2.bitwise_or(calibrated_mask, cv2.inRange(hsv_roi, lower, upper))
-                        
-                        cv2.imshow(f"Calibrated {color_name.capitalize()} Line Mask", calibrated_mask)
-                        cv2.waitKey(2000)
-                        cv2.destroyWindow(f"Calibrated {color_name.capitalize()} Line Mask")
-                        cv2.destroyWindow("Calibration")
-                        return True
-                    else:
-                        print(f"No {color_name} pixels found in contour. Try again.")
-                else:
-                    print(f"{color_name.capitalize()} contour too small. Try again.")
-            else:
-                print(f"No {color_name} line detected. Try again.")
 
 # Line detection function
 def detect_line(frame, color_priorities, color_ranges):
-    frame = ensure_bgr(frame)  # Ensure frame is in BGR format
+    # Ensure frame is in BGR format
+    if len(frame.shape) == 2:  # Grayscale
+        frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+    elif frame.shape[2] == 4:  # RGBA
+        frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
     
     # Apply ROI if enabled
     if USE_ROI:
@@ -490,7 +467,6 @@ def main():
     try:
         while True:
             frame = picam2.capture_array()
-            frame = ensure_bgr(frame)  # Ensure frame is in BGR format
             error, line_found, detected_color, available_colors = detect_line(frame, color_priorities, color_ranges)
             
             cv2.imshow("Line Follower", frame)
