@@ -360,6 +360,8 @@ def detect_line(frame, color_priorities, color_ranges):
 # Combined Detection and Line Following with Contour and Color Validation
 # Combined Detection and Line Following with Contour and Color Validation
 # Combined Detection and Line Following with Contour and Color Validation
+
+# Combined Detection and Line Following with Contour and Color Validation
 def detect_images_shapes_and_line(frame, prev_detections, reference_data, color_priorities, color_ranges, right_pwm, left_pwm, pause_state, max_len=5):
     # Line detection
     error, line_found, detected_color, available_colors, _, line_y_top, line_y_bottom, thresh = detect_line(frame, color_priorities, color_ranges)
@@ -369,41 +371,16 @@ def detect_images_shapes_and_line(frame, prev_detections, reference_data, color_
     
     # Only perform shape/image detection if line is found
     if line_found:
-        # Define two ROIs for shape detection: above and below the line, full width
-        roi_above_y_start = 0
-        roi_above_y_end = line_y_top
-        roi_below_y_start = line_y_bottom
-        roi_below_y_end = FRAME_HEIGHT
+        # Create a mask to exclude the line region from the threshold image
+        shape_thresh = thresh.copy()
+        shape_thresh[line_y_top:line_y_bottom, :] = 0  # Set the line region to black
         
-        # Ensure minimum height for ROIs
-        if roi_above_y_end <= roi_above_y_start + 50:
-            roi_above_y_end = DEFAULT_SHAPE_ROI_HEIGHT
-        if roi_below_y_end <= roi_below_y_start + 50:
-            roi_below_y_start = max(0, FRAME_HEIGHT - DEFAULT_SHAPE_ROI_HEIGHT)
+        # Draw ROI visualization (excluding the line region)
+        cv2.rectangle(frame, (0, 0), (FRAME_WIDTH, line_y_top), (0, 255, 255), 2)
+        cv2.rectangle(frame, (0, line_y_bottom), (FRAME_WIDTH, FRAME_HEIGHT), (0, 255, 255), 2)
         
-        # Crop the threshold image and frame to the two ROIs
-        shape_thresh_above = thresh[roi_above_y_start:roi_above_y_end, 0:FRAME_WIDTH]
-        shape_thresh_below = thresh[roi_below_y_start:roi_below_y_end, 0:FRAME_WIDTH]
-        shape_frame_above = frame[roi_above_y_start:roi_above_y_end, 0:FRAME_WIDTH]
-        shape_frame_below = frame[roi_below_y_start:roi_below_y_end, 0:FRAME_WIDTH]
-        
-        # Draw ROI rectangles for visualization (full width, split by line)
-        cv2.rectangle(frame, (0, roi_above_y_start), (FRAME_WIDTH, roi_above_y_end), (0, 255, 255), 2)
-        cv2.rectangle(frame, (0, roi_below_y_start), (FRAME_WIDTH, roi_below_y_end), (0, 255, 255), 2)
-        
-        # Find contours in both ROIs
-        contours_above, _ = cv2.findContours(shape_thresh_above, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        contours_below, _ = cv2.findContours(shape_thresh_below, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        # Adjust y-coordinates of contours_below to match the full frame
-        contours_below_shifted = []
-        for contour in contours_below:
-            shifted_contour = contour.copy()
-            shifted_contour[:, :, 1] += roi_below_y_start  # Adjust y-coordinates
-            contours_below_shifted.append(shifted_contour)
-        
-        # Combine contours from both ROIs
-        contours = list(contours_above) + contours_below_shifted
+        # Find contours in the modified threshold image
+        contours, _ = cv2.findContours(shape_thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
         # Create an image to show all shape contours (full frame, no quadrants)
         shape_contour_display = np.zeros((FRAME_HEIGHT, FRAME_WIDTH, 3), dtype=np.uint8)
@@ -449,23 +426,12 @@ def detect_images_shapes_and_line(frame, prev_detections, reference_data, color_
         
         # Validate color if we have a contour match
         if best_match and best_contour is not None:
-            # Determine which ROI the contour belongs to for color validation
-            x, y, w, h = cv2.boundingRect(best_contour)
-            if y < line_y_top:
-                shape_roi_frame = shape_frame_above
-                y_offset = roi_above_y_start
-            else:
-                shape_roi_frame = shape_frame_below
-                y_offset = roi_below_y_start
-            
-            # Create mask for current contour, adjusting for ROI offset
-            contour_for_mask = best_contour.copy()
-            contour_for_mask[:, :, 1] -= y_offset  # Adjust y-coordinates for the ROI
-            mask = np.zeros(shape_roi_frame.shape[:2], dtype=np.uint8)
-            cv2.drawContours(mask, [contour_for_mask], -1, 255, -1)
+            # Create mask for current contour using the full frame
+            mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+            cv2.drawContours(mask, [best_contour], -1, 255, -1)
             
             # Calculate color histogram for current contour
-            hsv = cv2.cvtColor(shape_roi_frame, cv2.COLOR_BGR2HSV)
+            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
             hist = cv2.calcHist([hsv], [0, 1, 2], mask, [8, 8, 8], [0, 180, 0, 256, 0, 256])
             cv2.normalize(hist, hist)
             
@@ -543,7 +509,6 @@ def detect_images_shapes_and_line(frame, prev_detections, reference_data, color_
     cv2.putText(frame, label, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
     
     return frame, detected_name, error, line_found, detected_color, available_colors, pause_state
-
 
 # Main function
 def main():
