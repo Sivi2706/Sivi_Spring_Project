@@ -6,6 +6,7 @@ from collections import deque
 import RPi.GPIO as GPIO
 import time
 import json
+import uuid
 
 # GPIO Pins for Motor Control
 IN1, IN2 = 22, 27         # Left motor control
@@ -239,7 +240,7 @@ def preprocess_reference_images():
                 'aspect_ratio': cv2.boundingRect(main_contour)[2] / cv2.boundingRect(main_contour)[3],
                 'area': cv2.contourArea(main_contour)
             }
-            print(f"Stored as {shape_type} (AR: {reference_shapes[filename]['aspect_ratio']:.2f})")
+            print(f"Stored as {shape_type} (AR: {reference_shapes[filename]['aspect_ratio']:.2f}, Area: {reference_shapes[filename]['area']:.0f})")
     
     print(f"\nPreprocessing complete. Loaded {len(reference_shapes)} reference shapes.")
     return reference_shapes
@@ -269,26 +270,44 @@ def classify_shape(contour):
             return "circle"
     return None
 
-# Match detected contour with reference shapes
+# Match detected contour with reference shapes with detailed logging
 def match_contour(contour, reference_shapes):
     best_match = None
     best_score = float('inf')
+    current_area = cv2.contourArea(contour)
+    x, y, w, h = cv2.boundingRect(contour)
+    current_ar = w/h if h != 0 else 1.0
+    current_shape = classify_shape(contour)
+    
+    print(f"\nMatching contour (Area: {current_area:.0f}, AR: {current_ar:.2f}, Shape: {current_shape or 'Unknown'})")
     
     for name, ref_data in reference_shapes.items():
         # Compare using shape matching score
         score = cv2.matchShapes(contour, ref_data['contour'], cv2.CONTOURS_MATCH_I1, 0)
         
         # Compare aspect ratios
-        x, y, w, h = cv2.boundingRect(contour)
-        current_ar = w/h
         ar_diff = abs(current_ar - ref_data['aspect_ratio'])
         
+        # Compare areas (normalized difference)
+        area_diff = abs(current_area - ref_data['area']) / max(current_area, ref_data['area'])
+        
         # Combined score (weighted)
-        combined_score = score * 0.7 + ar_diff * 0.3
+        combined_score = score * 0.5 + ar_diff * 0.3 + area_diff * 0.2
+        
+        print(f"  Comparing with {name}:")
+        print(f"    Shape Match Score: {score:.3f}")
+        print(f"    Aspect Ratio Diff: {ar_diff:.3f}")
+        print(f"    Area Diff: {area_diff:.3f}")
+        print(f"    Combined Score: {combined_score:.3f}")
         
         if combined_score < best_score and combined_score < 0.5:  # Threshold
             best_score = combined_score
             best_match = (name, ref_data['shape'])
+    
+    if best_match:
+        print(f"Best match: {best_match[0]} ({best_match[1]}) with score {best_score:.3f}")
+    else:
+        print("No match found within threshold")
     
     return best_match, best_score
 
@@ -380,8 +399,13 @@ def detect_images_shapes_and_line(frame, prev_detections, reference_shapes, colo
     # Convert thresh to 3-channel image for color overlays
     thresh_display = cv2.cvtColor(thresh, cv2.COLOR_GRAY2BGR)
     
+    # Create edge detection image
+    edges = cv2.Canny(thresh, 100, 200)
+    edges_display = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
+    
     # Only perform shape detection if line is found
     if line_found:
+        print("\nProcessing shapes in frame...")
         # Create a copy of the threshold image and exclude the line region
         shape_thresh = thresh.copy()
         shape_thresh[line_y_top:line_y_bottom, :] = 0  # Set the line region to black
@@ -392,18 +416,23 @@ def detect_images_shapes_and_line(frame, prev_detections, reference_shapes, colo
         
         # Find contours in the modified threshold image
         contours, _ = cv2.findContours(shape_thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        print(f"Found {len(contours)} contours in shape region")
         
         best_contour = None
         best_match = None
         best_score = float('inf')
         
         # Process each contour
-        for contour in contours:
-            if cv2.contourArea(contour) < MIN_SHAPE_AREA:
+        for i, contour in enumerate(contours):
+            area = cv2.contourArea(contour)
+            print(f"Contour {i+1}: Area = {area:.0f}")
+            if area < MIN_SHAPE_AREA:
+                print(f"  Skipping: Area below threshold ({MIN_SHAPE_AREA})")
                 continue
                 
             # Check if contour is complete
             if not is_contour_complete(contour, FRAME_WIDTH, FRAME_HEIGHT):
+                print("  Skipping: Contour touches frame edges")
                 continue
                 
             # Match with reference shapes
@@ -413,7 +442,7 @@ def detect_images_shapes_and_line(frame, prev_detections, reference_shapes, colo
                 best_match = match
                 best_score = score
         
-        # If a valid shape is detected, overlay it on both the RGB frame and Line Threshold
+        # If a valid shape is detected, overlay it on both the RGB frame, Line Threshold, and Edge Detection
         if best_contour is not None:
             filename, shape_type = best_match
             # Draw the contour on the RGB frame
@@ -429,10 +458,17 @@ def detect_images_shapes_and_line(frame, prev_detections, reference_shapes, colo
             cv2.drawContours(thresh_display, [best_contour], -1, (0, 255, 0), 2)
             cv2.putText(thresh_display, detected_name, (x, y - 10), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+            
+            # Draw the contour and label on the Edge Detection display
+            cv2.drawContours(edges_display, [best_contour], -1, (0, 255, 0), 2)
+            cv2.putText(edges_display, detected_name, (x, y - 10), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+            
             print(f"Detected {detected_name} from {filename} (Score: {best_score:.3f})")
     
-    # Show the updated Line Threshold window with shape detection
+    # Show the updated Line Threshold and Edge Detection windows
     cv2.imshow("Line Threshold", thresh_display)
+    cv2.imshow("Edge Detection", edges_display)
     
     # Update detection history
     prev_detections.append(detected_name)
