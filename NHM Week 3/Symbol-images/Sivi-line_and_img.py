@@ -55,19 +55,6 @@ default_color_ranges = {
     ]
 }
 
-# Define RGB color ranges for shape validation
-shape_color_ranges = {
-    'red': ([150, 0, 0], [255, 100, 100]),    # R: 150-255, G: 0-100, B: 0-100
-    'blue': ([0, 0, 150], [100, 100, 255]),   # R: 0-100, G: 0-100, B: 150-255
-    'green': ([0, 150, 0], [100, 255, 100]),  # R: 0-100, G: 150-255, B: 0-100
-}
-
-expected_shapes = {
-    'circle': 'red',
-    'triangle': 'blue',
-    'pentagon': 'red',  # Add this line
-}
-
 # Initialize Raspberry Pi Camera
 def initialize_camera():
     try:
@@ -273,6 +260,7 @@ def detect_line(frame, color_priorities, color_ranges):
             
             return error, True, best_color, all_available_colors, frame, line_y_top, line_y_bottom, thresh
     return 0, False, None, [], frame, line_y_top, line_y_bottom, thresh
+
 # Detect the shape type based on contour approximation
 def detect_shape(contour):
     peri = cv2.arcLength(contour, True)
@@ -291,22 +279,12 @@ def detect_shape(contour):
             return "circle"
     return None
 
-# Detect the color within a contour in the RGB frame
+# Simplified function - no color validation needed
 def detect_color_in_contour(frame, contour):
-    mask = np.zeros(frame.shape[:2], dtype=np.uint8)
-    cv2.drawContours(mask, [contour], -1, 255, -1)
-    mean_rgb = cv2.mean(frame, mask=mask)[:3]  # Get mean RGB values (B, G, R)
-    mean_rgb = np.array(mean_rgb)  # [B, G, R]
-    
-    for color_name, (lower, upper) in shape_color_ranges.items():
-        lower = np.array(lower)
-        upper = np.array(upper)
-        if (lower <= mean_rgb).all() and (mean_rgb <= upper).all():
-            return color_name
-    return None
+    # No color validation needed
+    return True
 
-# Combined Detection and Line Following with New Shape Detection
-# Combined Detection and Line Following with New Shape Detection
+# Combined Detection and Line Following with Shape Detection (no color validation)
 def detect_images_shapes_and_line(frame, prev_detections, color_priorities, color_ranges, right_pwm, left_pwm, pause_state, max_len=5):
     # Line detection (includes preprocessing for Line Threshold)
     error, line_found, detected_color, available_colors, _, line_y_top, line_y_bottom, thresh = detect_line(frame, color_priorities, color_ranges)
@@ -332,7 +310,6 @@ def detect_images_shapes_and_line(frame, prev_detections, color_priorities, colo
         
         best_contour = None
         best_shape = None
-        best_color = None
         
         # Process each contour
         for contour in contours:
@@ -348,18 +325,9 @@ def detect_images_shapes_and_line(frame, prev_detections, color_priorities, colo
             if shape_type is None:
                 continue
                 
-            # Detect the color within the contour in the RGB frame
-            color = detect_color_in_contour(frame, contour)
-            if color is None:
-                continue
-                
-            # Validate the shape-color combination
-            expected_color = expected_shapes.get(shape_type)
-            if expected_color == color:
-                best_contour = contour
-                best_shape = shape_type
-                best_color = color
-                break
+            best_contour = contour
+            best_shape = shape_type
+            break
         
         # If a valid shape is detected, overlay it on both the RGB frame and Line Threshold
         if best_contour is not None:
@@ -367,7 +335,7 @@ def detect_images_shapes_and_line(frame, prev_detections, color_priorities, colo
             cv2.drawContours(frame, [best_contour], -1, (0, 255, 0), 2)
             # Calculate bounding box for text on RGB frame
             x, y, w, h = cv2.boundingRect(best_contour)
-            detected_name = f"{best_color.capitalize()} {best_shape.capitalize()}"
+            detected_name = f"{best_shape.capitalize()}"
             cv2.putText(frame, detected_name, (x, y - 10), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
             label = f"Detected: {detected_name}"
@@ -378,7 +346,7 @@ def detect_images_shapes_and_line(frame, prev_detections, color_priorities, colo
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
             print(f"Detected {detected_name}")
         else:
-            print("No valid shape-color combination detected.")
+            print("No valid shape detected.")
     
     # Show the updated Line Threshold window with shape detection
     cv2.imshow("Line Threshold", thresh_display)
@@ -439,8 +407,6 @@ def detect_images_shapes_and_line(frame, prev_detections, color_priorities, colo
     
     return frame, detected_name, error, line_found, detected_color, available_colors, pause_state
 
-
-# Main function
 # Main function
 def main():
     picam2 = initialize_camera()
