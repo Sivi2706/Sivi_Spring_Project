@@ -207,6 +207,7 @@ def calibrate_black_line(picam2, color_ranges):
     cv2.destroyWindow("Calibration")
 
 # Line detection function with top and bottom ROIs
+# Line detection function with top and bottom ROIs
 def detect_line(frame, color_priorities, color_ranges):
     center_x = FRAME_WIDTH // 2
     cv2.line(frame, (center_x, 0), (center_x, FRAME_HEIGHT), (0, 0, 255), 2)
@@ -318,7 +319,7 @@ def detect_line(frame, color_priorities, color_ranges):
         # Fit a line to the contour
         [vx, vy, x0, y0] = cv2.fitLine(top_best_contour, cv2.DIST_L2, 0, 0.01, 0.01)
         line_angle = np.arctan2(vy, vx) * 180 / np.pi
-        line_angle = line_angle % 180  # Normalize to 0-180 degrees
+        line_angle = line_angle.item() % 180  # Extract scalar and normalize to 0-180 degrees
         
         contour_color = (0, 255, 0) if top_best_color != 'black' else (128, 128, 128)
         cv2.drawContours(frame[0:top_roi_y_end, 0:FRAME_WIDTH], 
@@ -330,7 +331,7 @@ def detect_line(frame, color_priorities, color_ranges):
         cv2.line(frame, (0, left_y), (FRAME_WIDTH, right_y), (0, 0, 255), 2)
         
         metadata['top_color'] = top_best_color
-        metadata['line_angle'] = round(line_angle, 2)
+        metadata['line_angle'] = round(line_angle, 2)  # Now safe to round
     
     # Display metadata
     y_offset = 30
@@ -344,6 +345,7 @@ def detect_line(frame, color_priorities, color_ranges):
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
     
     return error, line_found, bottom_best_color, all_available_colors
+
 
 # Main function
 def main():
