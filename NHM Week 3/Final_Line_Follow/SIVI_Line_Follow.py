@@ -236,7 +236,6 @@ def stop_motors(right_pwm, left_pwm):
     print("Stopped")
 
 # Function to calibrate a specific color and record HSV values
-# Function to calibrate a specific color and record HSV values
 def calibrate_color(picam2, color_ranges, color_name):
     print(f"\nCalibrating {color_name} line detection...")
     print(f"Place the camera to view the {color_name} line and press 'c' to capture and calibrate.")
@@ -268,6 +267,8 @@ def calibrate_color(picam2, color_ranges, color_name):
             roi = frame
             
         cv2.putText(frame, f"Press 'c' to calibrate {color_name} line", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+        cv2.putText(frame, "Press 'q' to skip", (10, 60),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
         
         cv2.imshow("Calibration", frame)
@@ -303,6 +304,17 @@ def calibrate_color(picam2, color_ranges, color_name):
                     # Record HSV values from pixels in the contour
                     roi_pixels = hsv_roi[mask == 255]
                     if len(roi_pixels) > 0:
+                        # Calculate median HSV for debugging
+                        median_h = int(np.median(roi_pixels[:, 0]))
+                        median_s = int(np.median(roi_pixels[:, 1]))
+                        median_v = int(np.median(roi_pixels[:, 2]))
+                        print(f"Median HSV for {color_name}: [{median_h}, {median_s}, {median_v}]")
+                        
+                        # Display median HSV in calibration window
+                        cv2.putText(frame, f"Median HSV: [{median_h}, {median_s}, {median_v}]", (10, 90),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+                        cv2.imshow("Calibration", frame)
+                        
                         if color_name == 'red':
                             # Handle red with two ranges
                             lower_red_pixels = roi_pixels[roi_pixels[:, 0] <= 10]
@@ -329,12 +341,6 @@ def calibrate_color(picam2, color_ranges, color_name):
                                 print(f"Upper red range: [{h_min_u}, {s_min_u}, {v_min_u}] to [{h_max_u}, {s_max_u}, {v_max_u}]")
                         else:
                             # Single range for other colors
-                            # Calculate median HSV for debugging
-                            median_h = int(np.median(roi_pixels[:, 0]))
-                            median_s = int(np.median(roi_pixels[:, 1]))
-                            median_v = int(np.median(roi_pixels[:, 2]))
-                            print(f"Median HSV for {color_name}: [{median_h}, {median_s}, {median_v}]")
-                            
                             # Use tighter margins for blue
                             h_margin = 5 if color_name == 'blue' else 10
                             s_v_margin = 15 if color_name == 'blue' else 20
@@ -363,16 +369,36 @@ def calibrate_color(picam2, color_ranges, color_name):
                             calibrated_mask = cv2.bitwise_or(calibrated_mask, cv2.inRange(hsv_roi, lower, upper))
                         
                         cv2.imshow(f"Calibrated {color_name.capitalize()} Line Mask", calibrated_mask)
-                        cv2.waitKey(2000)
-                        cv2.destroyWindow(f"Calibrated {color_name.capitalize()} Line Mask")
-                        cv2.destroyWindow("Calibration")
-                        return True
+                        cv2.putText(frame, "Press 'c' to confirm, 'q' to retry", (10, 120),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+                        cv2.imshow("Calibration", frame)
+                        
+                        # Wait for user input to proceed
+                        while True:
+                            key = cv2.waitKey(1) & 0xFF
+                            if key == ord('c'):
+                                cv2.destroyWindow(f"Calibrated {color_name.capitalize()} Line Mask")
+                                cv2.destroyWindow("Calibration")
+                                return True
+                            elif key == ord('q'):
+                                print(f"Retrying calibration for {color_name}.")
+                                cv2.destroyWindow(f"Calibrated {color_name.capitalize()} Line Mask")
+                                break
                     else:
                         print(f"No {color_name} pixels found in contour. Try again.")
+                        cv2.putText(frame, f"No {color_name} pixels found. Try again.", (10, 90),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+                        cv2.imshow("Calibration", frame)
                 else:
                     print(f"{color_name.capitalize()} contour too small. Try again.")
+                    cv2.putText(frame, f"{color_name.capitalize()} contour too small. Try again.", (10, 90),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+                    cv2.imshow("Calibration", frame)
             else:
                 print(f"No {color_name} line detected. Try again.")
+                cv2.putText(frame, f"No {color_name} line detected. Try again.", (10, 90),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+                cv2.imshow("Calibration", frame)
 
 # Line detection function
 def detect_line(frame, color_priorities, color_ranges):
