@@ -10,6 +10,9 @@ from picamera2 import Picamera2
 IN1, IN2 = 22, 27         # Left motor control
 IN3, IN4 = 17, 4          # Right motor control
 ENA, ENB = 13, 12         # PWM pins for motors
+SERVO_PIN = 18            # Servo motor pin
+encoderPinRight = 23      # Right encoder
+encoderPinLeft = 24       # Left encoder
 
 # Constants
 WHEEL_DIAMETER = 4.05      # cm
@@ -35,8 +38,12 @@ ROI_HEIGHT = 150           # Height of the ROI from the bottom of the frame
 
 # PWM settings
 PWM_FREQ = 1000           # Motor PWM frequency
-SERVO_FREQ = 50           # Servo PWM frequency (unused but preserved)
-SERVO_NEUTRAL = 7.5       # Neutral position (unused but preserved)
+SERVO_FREQ = 50           # Servo PWM frequency
+SERVO_NEUTRAL = 7.5       # Neutral position (90 degrees, 7.5% duty cycle)
+
+# Variables to store encoder counts
+right_counter = 0
+left_counter = 0
 
 # Calibration file
 CALIBRATION_FILE = "color_calibration.json"
@@ -140,25 +147,40 @@ def get_color_choices():
         else:
             print("Invalid choice. Please try again.")
 
+# Encoder callback functions
+def right_encoder_callback(channel):
+    global right_counter
+    right_counter += 1
+
+def left_encoder_callback(channel):
+    global left_counter
+    left_counter += 1
+
 # GPIO Setup
 def setup_gpio():
     GPIO.setmode(GPIO.BCM)
     GPIO.setwarnings(False)
 
-    # Setup motor pins
-    GPIO.setup(IN1, GPIO.OUT)
-    GPIO.setup(IN2, GPIO.OUT)
-    GPIO.setup(IN3, GPIO.OUT)
-    GPIO.setup(IN4, GPIO.OUT)
-    GPIO.setup(ENA, GPIO.OUT)
-    GPIO.setup(ENB, GPIO.OUT)
-
+    # Setup motor and encoder pins
+    GPIO.setup([IN1, IN2, IN3, IN4, ENA, ENB, SERVO_PIN], GPIO.OUT)
+    GPIO.setup(encoderPinRight, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    GPIO.setup(encoderPinLeft, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    
+    # Set up encoder interrupts
+    GPIO.add_event_detect(encoderPinRight, GPIO.RISING, callback=right_encoder_callback)
+    GPIO.add_event_detect(encoderPinLeft, GPIO.RISING, callback=left_encoder_callback)
+    
+    # Setup motor PWM
     right_pwm = GPIO.PWM(ENA, PWM_FREQ)  # Right motor
     left_pwm = GPIO.PWM(ENB, PWM_FREQ)   # Left motor
     right_pwm.start(0)
     left_pwm.start(0)
 
-    return right_pwm, left_pwm
+    # Setup servo PWM
+    servo_pwm = GPIO.PWM(SERVO_PIN, SERVO_FREQ)
+    servo_pwm.start(SERVO_NEUTRAL)  # Start at neutral
+
+    return right_pwm, left_pwm, servo_pwm
 
 # Motor control functions
 def turn_right(right_pwm, left_pwm):
@@ -168,6 +190,7 @@ def turn_right(right_pwm, left_pwm):
     GPIO.output(IN4, GPIO.LOW)
     right_pwm.ChangeDutyCycle(TURN_SPEED)
     left_pwm.ChangeDutyCycle(TURN_SPEED)
+    print("Turning Right")
 
 def turn_left(right_pwm, left_pwm):
     GPIO.output(IN1, GPIO.LOW)
@@ -176,6 +199,7 @@ def turn_left(right_pwm, left_pwm):
     GPIO.output(IN4, GPIO.HIGH)
     right_pwm.ChangeDutyCycle(TURN_SPEED)
     left_pwm.ChangeDutyCycle(TURN_SPEED)
+    print("Turning Left")
 
 def move_forward(right_pwm, left_pwm):
     GPIO.output(IN1, GPIO.HIGH)
@@ -184,6 +208,7 @@ def move_forward(right_pwm, left_pwm):
     GPIO.output(IN4, GPIO.HIGH)
     right_pwm.ChangeDutyCycle(BASE_SPEED)
     left_pwm.ChangeDutyCycle(BASE_SPEED)
+    print("Moving Forward")
 
 def move_backward(right_pwm, left_pwm):
     GPIO.output(IN1, GPIO.LOW)
@@ -192,20 +217,24 @@ def move_backward(right_pwm, left_pwm):
     GPIO.output(IN4, GPIO.LOW)
     right_pwm.ChangeDutyCycle(REVERSE_SPEED)
     left_pwm.ChangeDutyCycle(REVERSE_SPEED)
+    print("Moving Backward")
 
-def stop_motors(right_pwm, left_pwm):
+def stop_motors(right_pwm, left_pwm, servo_pwm):
     right_pwm.ChangeDutyCycle(0)
     left_pwm.ChangeDutyCycle(0)
     GPIO.output(IN1, GPIO.LOW)
     GPIO.output(IN2, GPIO.LOW)
     GPIO.output(IN3, GPIO.LOW)
     GPIO.output(IN4, GPIO.LOW)
+    servo_pwm.ChangeDutyCycle(SERVO_NEUTRAL)
+    print("Stopped")
 
 # Function to calibrate a specific color
 def calibrate_color(picam2, color_ranges, color_name):
     print(f"\nCalibrating {color_name} line detection...")
-    print("View the camera feed, position the camera over the line, and press 'c' to start calibration or 'q' to skip.")
-
+    print(f"Place the camera to view the {color_name} line and press 'c' to capture and calibrate.")
+    print("Press 'q' to skip calibration for this color.")
+    
     # Initial broad HSV ranges for calibration
     initial_ranges = {
         'red': [([0, 100, 100], [10, 255, 255]), ([160, 100, 100], [180, 255, 255])],
@@ -224,103 +253,82 @@ def calibrate_color(picam2, color_ranges, color_name):
         elif frame.shape[2] == 4:  # RGBA
             frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
         
-        # Draw ROI if enabled
-        if USE_ROI:
-            roi_y_start = FRAME_HEIGHT - ROI_HEIGHT
-            cv2.rectangle(frame, (0, roi_y_start), (FRAME_WIDTH, FRAME_HEIGHT), (255, 255, 0), 2)
-            roi = frame[roi_y_start:FRAME_HEIGHT, 0:FRAME_WIDTH]
-        else:
-            roi = frame
+        # Use the entire frame for calibration
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         
-        # Display instructions on the camera feed
-        cv2.putText(frame, f"Calibrating {color_name} - Press 'c' to start, 'q' to skip", (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+        # Create a mask using initial broad range
+        color_mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
+        for lower, upper in initial_ranges[color_name]:
+            lower = np.array(lower, dtype=np.uint8)
+            upper = np.array(upper, dtype=np.uint8)
+            color_mask = cv2.bitwise_or(color_mask, cv2.inRange(hsv, lower, upper))
+        
+        # Find contours in the mask
+        contours, _ = cv2.findContours(color_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        if contours:
+            # Find the largest contour
+            color_contour = max(contours, key=cv2.contourArea)
+            if cv2.contourArea(color_contour) > MIN_CONTOUR_AREA:
+                # Create a mask from the contour
+                mask = np.zeros_like(color_mask)
+                cv2.drawContours(mask, [color_contour], -1, 255, -1)
+                
+                # Get HSV pixels from the contour
+                hsv_pixels = hsv[mask == 255]
+                if len(hsv_pixels) > 0:
+                    h_min = np.min(hsv_pixels[:, 0])
+                    h_max = np.max(hsv_pixels[:, 0])
+                    s_min = np.min(hsv_pixels[:, 1])
+                    s_max = np.max(hsv_pixels[:, 1])
+                    v_min = np.min(hsv_pixels[:, 2])
+                    v_max = np.max(hsv_pixels[:, 2])
+                    
+                    # Apply margins
+                    h_min = max(0, h_min - 5)
+                    h_max = min(179, h_max + 5)
+                    s_min = max(0, s_min - 20)
+                    s_max = min(255, s_max + 20)
+                    v_min = max(0, v_min - 20)
+                    v_max = min(255, v_max + 20)
+                    
+                    # Update color range
+                    if color_name == 'red':
+                        # Handle red with two ranges
+                        if h_min < 10 and h_max > 170:
+                            color_ranges['red'] = [
+                                ([0, s_min, v_min], [10, s_max, v_max]),
+                                ([170, s_min, v_min], [180, s_max, v_max])
+                            ]
+                        else:
+                            color_ranges['red'] = [([h_min, s_min, v_min], [h_max, s_max, v_max])]
+                    else:
+                        color_ranges[color_name] = [([h_min, s_min, v_min], [h_max, s_max, v_max])]
+                    
+                    print(f"Updated {color_name} line HSV range: ({h_min}, {s_min}, {v_min}) to ({h_max}, {s_max}, {v_max})")
+                    
+                    # Show the calibrated mask
+                    calibrated_mask = cv2.inRange(hsv, np.array([h_min, s_min, v_min]), np.array([h_max, s_max, v_max]))
+                    cv2.imshow(f"Calibrated {color_name.capitalize()} Line Mask", calibrated_mask)
+                    cv2.waitKey(2000)
+                    cv2.destroyWindow(f"Calibrated {color_name.capitalize()} Line Mask")
+                    cv2.destroyWindow("Calibration")
+                    return True
+                else:
+                    print(f"No pixels found in {color_name} contour. Try again.")
+            else:
+                print(f"{color_name.capitalize()} contour too small. Try again.")
+        else:
+            print(f"No {color_name} line detected. Try again.")
         
         cv2.imshow("Calibration", frame)
         key = cv2.waitKey(1) & 0xFF
-        
         if key == ord('q'):
             print(f"Skipped calibration for {color_name}.")
             cv2.destroyWindow("Calibration")
             return False
         elif key == ord('c'):
-            # Convert ROI to HSV for calibration
-            hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-            
-            # Create a mask using initial broad range
-            color_mask = np.zeros(hsv_roi.shape[:2], dtype=np.uint8)
-            for lower, upper in initial_ranges[color_name]:
-                lower = np.array(lower, dtype=np.uint8)
-                upper = np.array(upper, dtype=np.uint8)
-                color_mask = cv2.bitwise_or(color_mask, cv2.inRange(hsv_roi, lower, upper))
-            
-            # Find contours in the mask
-            contours, _ = cv2.findContours(color_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            if contours:
-                # Find the largest contour
-                color_contour = max(contours, key=cv2.contourArea)
-                if cv2.contourArea(color_contour) > MIN_CONTOUR_AREA:
-                    # Create a mask from the contour
-                    mask = np.zeros_like(color_mask)
-                    cv2.drawContours(mask, [color_contour], -1, 255, -1)
-                    
-                    # Get HSV pixels from the contour
-                    roi_pixels = hsv_roi[mask == 255]
-                    if len(roi_pixels) > 0:
-                        if color_name == 'red':
-                            # Handle red with two ranges
-                            lower_red_pixels = roi_pixels[roi_pixels[:, 0] <= 10]
-                            upper_red_pixels = roi_pixels[roi_pixels[:, 0] >= 170]
-                            
-                            if len(lower_red_pixels) > 0:
-                                h_min_l = max(0, np.min(lower_red_pixels[:, 0]) - 5)
-                                h_max_l = min(10, np.max(lower_red_pixels[:, 0]) + 5)
-                                s_min_l = max(0, np.min(lower_red_pixels[:, 1]) - 20)
-                                s_max_l = min(255, np.max(lower_red_pixels[:, 1]) + 20)
-                                v_min_l = max(0, np.min(lower_red_pixels[:, 2]) - 20)
-                                v_max_l = min(255, np.max(lower_red_pixels[:, 2]) + 20)
-                                color_ranges['red'][0] = ([h_min_l, s_min_l, v_min_l], [h_max_l, s_max_l, v_max_l])
-                                print(f"Lower red range: [{h_min_l}, {s_min_l}, {v_min_l}] to [{h_max_l}, {s_max_l}, {v_max_l}]")
-                            
-                            if len(upper_red_pixels) > 0:
-                                h_min_u = max(170, np.min(upper_red_pixels[:, 0]) - 5)
-                                h_max_u = min(180, np.max(upper_red_pixels[:, 0]) + 5)
-                                s_min_u = max(0, np.min(upper_red_pixels[:, 1]) - 20)
-                                s_max_u = min(255, np.max(upper_red_pixels[:, 1]) + 20)
-                                v_min_u = max(0, np.min(upper_red_pixels[:, 2]) - 20)
-                                v_max_u = min(255, np.max(upper_red_pixels[:, 2]) + 20)
-                                color_ranges['red'][1] = ([h_min_u, s_min_u, v_min_u], [h_max_u, s_max_u, v_max_u])
-                                print(f"Upper red range: [{h_min_u}, {s_min_u}, {v_min_u}] to [{h_max_u}, {s_max_u}, {v_max_u}]")
-                        else:
-                            # Single range for other colors
-                            h_min = max(0, np.min(roi_pixels[:, 0]) - 10)
-                            h_max = min(179, np.max(roi_pixels[:, 0]) + 10)
-                            s_min = max(0, np.min(roi_pixels[:, 1]) - 20)
-                            s_max = min(255, np.max(roi_pixels[:, 1]) + 20)
-                            v_min = max(0, np.min(roi_pixels[:, 2]) - 20)
-                            v_max = min(255, np.max(roi_pixels[:, 2]) + 20)
-                            color_ranges[color_name] = [([h_min, s_min, v_min], [h_max, s_max, v_max])]
-                            print(f"{color_name.capitalize()} range: [{h_min}, {s_min}, {v_min}] to [{h_max}, {s_max}, {v_max}]")
-                        
-                        # Show the calibrated mask
-                        calibrated_mask = np.zeros(hsv_roi.shape[:2], dtype=np.uint8)
-                        for lower, upper in color_ranges[color_name]:
-                            lower = np.array(lower, dtype=np.uint8)
-                            upper = np.array(upper, dtype=np.uint8)
-                            calibrated_mask = cv2.bitwise_or(calibrated_mask, cv2.inRange(hsv_roi, lower, upper))
-                        
-                        cv2.imshow(f"Calibrated {color_name.capitalize()} Line Mask", calibrated_mask)
-                        cv2.waitKey(2000)
-                        cv2.destroyWindow(f"Calibrated {color_name.capitalize()} Line Mask")
-                        cv2.destroyWindow("Calibration")
-                        return True
-                    else:
-                        print(f"No {color_name} pixels found in contour. Try again.")
-                else:
-                    print(f"{color_name.capitalize()} contour too small. Try again.")
-            else:
-                print(f"No {color_name} line detected. Try again.")
+            continue
 
 # Line detection function
 def detect_line(frame, color_priorities, color_ranges):
@@ -424,7 +432,7 @@ def detect_line(frame, color_priorities, color_ranges):
 
 # Main function
 def main():
-    right_pwm, left_pwm = setup_gpio()
+    right_pwm, left_pwm, servo_pwm = setup_gpio()
     picam2 = initialize_camera()
     if picam2 is None:
         print("Exiting program. Camera could not be initialized.")
@@ -434,18 +442,22 @@ def main():
     # Load or initialize color ranges
     color_ranges = load_color_calibration()
     
-    # Calibrate all colors before starting
+    # Prompt user for calibration
     colors_to_calibrate = ['red', 'blue', 'green', 'yellow', 'black']
-    print("\nStarting calibration for all colors...")
-    for color in colors_to_calibrate:
-        success = calibrate_color(picam2, color_ranges, color)
-        if success:
-            print(f"Calibration for {color} completed.")
-        else:
-            print(f"Using existing or default range for {color}.")
-    
-    # Save calibrated ranges
-    save_color_calibration(color_ranges)
+    print("\nDo you want to calibrate colors now? (y/n)")
+    calibrate_choice = input().lower()
+    if calibrate_choice == 'y':
+        print("\nStarting calibration for all colors...")
+        for color in colors_to_calibrate:
+            success = calibrate_color(picam2, color_ranges, color)
+            if success:
+                print(f"Calibration for {color} completed.")
+            else:
+                print(f"Using existing or default range for {color}.")
+        # Save calibrated ranges
+        save_color_calibration(color_ranges)
+    else:
+        print("Skipping calibration. Using existing or default color ranges.")
     
     # Get color priorities
     color_priorities = get_color_choices()
@@ -469,13 +481,18 @@ def main():
             if key == ord('q'):
                 break
             elif key == ord('c'):
-                for color in colors_to_calibrate:
-                    success = calibrate_color(picam2, color_ranges, color)
-                    if success:
-                        print(f"Recalibration for {color} completed.")
-                    else:
-                        print(f"Skipped recalibration for {color}.")
-                save_color_calibration(color_ranges)
+                print("\nDo you want to recalibrate colors now? (y/n)")
+                recalibrate_choice = input().lower()
+                if recalibrate_choice == 'y':
+                    for color in colors_to_calibrate:
+                        success = calibrate_color(picam2, color_ranges, color)
+                        if success:
+                            print(f"Recalibration for {color} completed.")
+                        else:
+                            print(f"Skipped recalibration for {color}.")
+                    save_color_calibration(color_ranges)
+                else:
+                    print("Skipping recalibration.")
             
             if line_found:
                 recovery_mode = False
@@ -495,9 +512,10 @@ def main():
     except KeyboardInterrupt:
         print("\nProgram stopped by user")
     finally:
-        stop_motors(right_pwm, left_pwm)
+        stop_motors(right_pwm, left_pwm, servo_pwm)
         right_pwm.stop()
         left_pwm.stop()
+        servo_pwm.stop()
         cv2.destroyAllWindows()
         picam2.stop()
         GPIO.cleanup()
