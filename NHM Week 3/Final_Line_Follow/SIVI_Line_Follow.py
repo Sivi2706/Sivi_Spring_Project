@@ -10,7 +10,6 @@ from picamera2 import Picamera2
 IN1, IN2 = 22, 27         # Left motor control
 IN3, IN4 = 17, 4          # Right motor control
 ENA, ENB = 13, 12         # PWM pins for motors
-SERVO_PIN = 18            # Servo motor pin
 encoderPinRight = 23      # Right encoder
 encoderPinLeft = 24       # Left encoder
 
@@ -38,8 +37,6 @@ ROI_HEIGHT = 150           # Height of the ROI from the bottom of the frame
 
 # PWM settings
 PWM_FREQ = 1000           # Motor PWM frequency
-SERVO_FREQ = 50           # Servo PWM frequency
-SERVO_NEUTRAL = 7.5       # Neutral position (90 degrees, 7.5% duty cycle)
 
 # Variables to store encoder counts
 right_counter = 0
@@ -162,7 +159,7 @@ def setup_gpio():
     GPIO.setwarnings(False)
 
     # Setup motor and encoder pins
-    GPIO.setup([IN1, IN2, IN3, IN4, ENA, ENB, SERVO_PIN], GPIO.OUT)
+    GPIO.setup([IN1, IN2, IN3, IN4, ENA, ENB], GPIO.OUT)
     GPIO.setup(encoderPinRight, GPIO.IN, pull_up_down=GPIO.PUD_UP)
     GPIO.setup(encoderPinLeft, GPIO.IN, pull_up_down=GPIO.PUD_UP)
     
@@ -176,11 +173,7 @@ def setup_gpio():
     right_pwm.start(0)
     left_pwm.start(0)
 
-    # Setup servo PWM
-    servo_pwm = GPIO.PWM(SERVO_PIN, SERVO_FREQ)
-    servo_pwm.start(SERVO_NEUTRAL)  # Start at neutral
-
-    return right_pwm, left_pwm, servo_pwm
+    return right_pwm, left_pwm
 
 # Motor control functions
 def turn_right(right_pwm, left_pwm):
@@ -219,14 +212,13 @@ def move_backward(right_pwm, left_pwm):
     left_pwm.ChangeDutyCycle(REVERSE_SPEED)
     print("Moving Backward")
 
-def stop_motors(right_pwm, left_pwm, servo_pwm):
+def stop_motors(right_pwm, left_pwm):
     right_pwm.ChangeDutyCycle(0)
     left_pwm.ChangeDutyCycle(0)
     GPIO.output(IN1, GPIO.LOW)
     GPIO.output(IN2, GPIO.LOW)
     GPIO.output(IN3, GPIO.LOW)
     GPIO.output(IN4, GPIO.LOW)
-    servo_pwm.ChangeDutyCycle(SERVO_NEUTRAL)
     print("Stopped")
 
 # Function to calibrate a specific color
@@ -269,83 +261,46 @@ def calibrate_color(picam2, color_ranges, color_name):
             # Find the largest contour
             color_contour = max(contours, key=cv2.contourArea)
             if cv2.contourArea(color_contour) > MIN_CONTOUR_AREA:
-                # Create a mask from the contour
-                mask = np.zeros_like(color_mask)
-                cv2.drawContours(mask, [color_contour], -1, 255, -1)
-                
-                # Get contour centroid (center of the error bar)
+                # Get contour centroid (center point)
                 M = cv2.moments(color_contour)
                 if M["m00"] != 0:
                     cx = int(M["m10"] / M["m00"])
                     cy = int(M["m01"] / M["m00"])
                     
-                    if color_name == 'blue':
-                        # For blue, use the absolute HSV value at the centroid
-                        hsv_center = hsv[cy, cx]
-                        h, s, v = hsv_center
-                        
-                        # Create range around the central HSV value
-                        h_min = max(0, h - 5)
-                        h_max = min(179, h + 5)
-                        s_min = max(0, s - 20)
-                        s_max = min(255, s + 20)
-                        v_min = max(0, v - 20)
-                        v_max = min(255, v + 20)
-                        
-                        color_ranges['blue'] = [([h_min, s_min, v_min], [h_max, s_max, v_max])]
-                        
-                        print(f"Updated {color_name} line HSV range: ({h_min}, {s_min}, {v_min}) to ({h_max}, {s_max}, {v_max})")
-                        
-                        # Show the calibrated mask
-                        calibrated_mask = cv2.inRange(hsv, np.array([h_min, s_min, v_min]), np.array([h_max, s_max, v_max]))
-                        cv2.imshow(f"Calibrated {color_name.capitalize()} Line Mask", calibrated_mask)
-                        cv2.waitKey(2000)
-                        cv2.destroyWindow(f"Calibrated {color_name.capitalize()} Line Mask")
-                        cv2.destroyWindow("Calibration")
-                        return True
-                    else:
-                        # For other colors, use the existing min/max logic
-                        hsv_pixels = hsv[mask == 255]
-                        if len(hsv_pixels) > 0:
-                            h_min = np.min(hsv_pixels[:, 0])
-                            h_max = np.max(hsv_pixels[:, 0])
-                            s_min = np.min(hsv_pixels[:, 1])
-                            s_max = np.max(hsv_pixels[:, 1])
-                            v_min = np.min(hsv_pixels[:, 2])
-                            v_max = np.max(hsv_pixels[:, 2])
-                            
-                            # Apply margins
-                            h_min = max(0, h_min - 5)
-                            h_max = min(179, h_max + 5)
-                            s_min = max(0, s_min - 20)
-                            s_max = min(255, s_max + 20)
-                            v_min = max(0, v_min - 20)
-                            v_max = min(255, v_max + 20)
-                            
-                            # Update color range
-                            if color_name == 'red':
-                                # Handle red with two ranges
-                                if h_min < 10 and h_max > 170:
-                                    color_ranges['red'] = [
-                                        ([0, s_min, v_min], [10, s_max, v_max]),
-                                        ([170, s_min, v_min], [180, s_max, v_max])
-                                    ]
-                                else:
-                                    color_ranges['red'] = [([h_min, s_min, v_min], [h_max, s_max, v_max])]
-                            else:
-                                color_ranges[color_name] = [([h_min, s_min, v_min], [h_max, s_max, v_max])]
-                            
-                            print(f"Updated {color_name} line HSV range: ({h_min}, {s_min}, {v_min}) to ({h_max}, {s_max}, {v_max})")
-                            
-                            # Show the calibrated mask
-                            calibrated_mask = cv2.inRange(hsv, np.array([h_min, s_min, v_min]), np.array([h_max, s_max, v_max]))
-                            cv2.imshow(f"Calibrated {color_name.capitalize()} Line Mask", calibrated_mask)
-                            cv2.waitKey(2000)
-                            cv2.destroyWindow(f"Calibrated {color_name.capitalize()} Line Mask")
-                            cv2.destroyWindow("Calibration")
-                            return True
+                    # Use the absolute HSV value at the centroid for all colors
+                    hsv_center = hsv[cy, cx]
+                    h, s, v = hsv_center
+                    
+                    # Create range around the central HSV value
+                    h_min = max(0, h - 5)
+                    h_max = min(179, h + 5)
+                    s_min = max(0, s - 20)
+                    s_max = min(255, s + 20)
+                    v_min = max(0, v - 20)
+                    v_max = min(255, v + 20)
+                    
+                    # Update color range
+                    if color_name == 'red':
+                        # Handle red with two ranges
+                        if h_min < 10 and h_max > 170:
+                            color_ranges['red'] = [
+                                ([0, s_min, v_min], [10, s_max, v_max]),
+                                ([170, s_min, v_min], [180, s_max, v_max])
+                            ]
                         else:
-                            print(f"No pixels found in {color_name} contour. Try again.")
+                            color_ranges['red'] = [([h_min, s_min, v_min], [h_max, s_max, v_max])]
+                    else:
+                        color_ranges[color_name] = [([h_min, s_min, v_min], [h_max, s_max, v_max])]
+                    
+                    print(f"Updated {color_name} line HSV range: ({h_min}, {s_min}, {v_min}) to ({h_max}, {s_max}, {v_max})")
+                    
+                    # Show the calibrated mask
+                    calibrated_mask = cv2.inRange(hsv, np.array([h_min, s_min, v_min]), np.array([h_max, s_max, v_max]))
+                    cv2.imshow(f"Calibrated {color_name.capitalize()} Line Mask", calibrated_mask)
+                    cv2.waitKey(2000)
+                    cv2.destroyWindow(f"Calibrated {color_name.capitalize()} Line Mask")
+                    cv2.destroyWindow("Calibration")
+                    return True
                 else:
                     print(f"Invalid contour moments for {color_name}. Try again.")
             else:
@@ -464,7 +419,7 @@ def detect_line(frame, color_priorities, color_ranges):
 
 # Main function
 def main():
-    right_pwm, left_pwm, servo_pwm = setup_gpio()
+    right_pwm, left_pwm = setup_gpio()
     picam2 = initialize_camera()
     if picam2 is None:
         print("Exiting program. Camera could not be initialized.")
@@ -475,12 +430,12 @@ def main():
     color_ranges = load_color_calibration()
     
     # Prompt user for calibration
-    colors_to_calibrate = ['red', 'blue', 'green', 'yellow', 'black']
+    colors_to_leave = ['red', 'blue', 'green', 'yellow', 'black']
     print("\nDo you want to calibrate colors now? (y/n)")
     calibrate_choice = input().lower()
     if calibrate_choice == 'y':
         print("\nStarting calibration for all colors...")
-        for color in colors_to_calibrate:
+        for color in colors_to_leave:
             success = calibrate_color(picam2, color_ranges, color)
             if success:
                 print(f"Calibration for {color} completed.")
@@ -516,7 +471,7 @@ def main():
                 print("\nDo you want to recalibrate colors now? (y/n)")
                 recalibrate_choice = input().lower()
                 if recalibrate_choice == 'y':
-                    for color in colors_to_calibrate:
+                    for color in colors_to_leave:
                         success = calibrate_color(picam2, color_ranges, color)
                         if success:
                             print(f"Recalibration for {color} completed.")
@@ -544,10 +499,9 @@ def main():
     except KeyboardInterrupt:
         print("\nProgram stopped by user")
     finally:
-        stop_motors(right_pwm, left_pwm, servo_pwm)
+        stop_motors(right_pwm, left_pwm)
         right_pwm.stop()
         left_pwm.stop()
-        servo_pwm.stop()
         cv2.destroyAllWindows()
         picam2.stop()
         GPIO.cleanup()
