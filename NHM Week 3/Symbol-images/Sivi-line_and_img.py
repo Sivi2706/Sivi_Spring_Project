@@ -21,15 +21,14 @@ WHEEL_CIRCUMFERENCE = np.pi * WHEEL_DIAMETER  # cm
 
 # Line following parameters
 BASE_SPEED = 45           # Base motor speed (0-100)
-TURN_SPEED = 60           # Speed for pivot turns (0-100)TURN_SPEED = 60           # Speed for pivot turns (0-100)
+TURN_SPEED = 60           # Speed for pivot turns (0-100)
 MIN_CONTOUR_AREA = 800     # Minimum area for valid contours
 FRAME_WIDTH = 640          # Camera frame width
 FRAME_HEIGHT = 480         # Camera frame height
 TURN_THRESHOLD = 100       # Error threshold for pivoting
 REVERSE_SPEED = 40         # Speed when reversing
-USE_ROI = True             # Enable ROI for line detection
-ROI_HEIGHT = 150           # Height of the ROI from the bottom
 SHAPE_ROI_WIDTH = 200      # Width of the ROI for shape detection (centered)
+ASPECT_RATIO_TOLERANCE = 0.2  # Tolerance for aspect ratio matching
 
 # Variables for encoder counts
 right_counter = 0
@@ -208,6 +207,10 @@ def preprocess_reference_data():
             if cv2.contourArea(main_contour) < 500:
                 continue
                 
+            # Calculate aspect ratio
+            x, y, w, h = cv2.boundingRect(main_contour)
+            aspect_ratio = float(w) / h if h != 0 else float('inf')
+            
             # Create mask for color histogram
             mask = np.zeros(img.shape[:2], dtype=np.uint8)
             cv2.drawContours(mask, [main_contour], -1, 255, -1)
@@ -217,11 +220,12 @@ def preprocess_reference_data():
             hist = cv2.calcHist([hsv], [0, 1, 2], mask, [8, 8, 8], [0, 180, 0, 256, 0, 256])
             cv2.normalize(hist, hist)
             
-            # Store contour and histogram
+            # Store contour, histogram, and aspect ratio
             reference_data[filename] = {
                 'contour': main_contour,
                 'color_hist': hist,
-                'image': img
+                'image': img,
+                'aspect_ratio': aspect_ratio
             }
     
     return reference_data
@@ -242,25 +246,27 @@ def compare_contours(c1, c2):
 def compare_color_histograms(hist1, hist2):
     return cv2.compareHist(hist1, hist2, cv2.HISTCMP_CHISQR)
 
-# Line Detection Function
+# Check if contour is complete (not touching frame edges)
+def is_contour_complete(contour, frame_width, frame_height, margin=5):
+    x, y, w, h = cv2.boundingRect(contour)
+    return (x > margin and
+            y > margin and
+            x + w < frame_width - margin and
+            y + h < frame_height - margin)
+
+# Line Detection Function (No ROI)
 def detect_line(frame, color_priorities, color_ranges):
-    if USE_ROI:
-        roi_y_start = FRAME_HEIGHT - ROI_HEIGHT
-        roi = frame[roi_y_start:FRAME_HEIGHT, 0:FRAME_WIDTH]
-        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-    else:
-        roi = frame
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     center_x = FRAME_WIDTH // 2
     cv2.line(frame, (center_x, 0), (center_x, FRAME_HEIGHT), (0, 0, 255), 2)
-    if USE_ROI:
-        cv2.rectangle(frame, (0, roi_y_start), (FRAME_WIDTH, FRAME_HEIGHT), (255, 255, 0), 2)
+    
     best_contour = None
     best_color = None
     best_cx, best_cy = -1, -1
     max_area = 0
     valid_contours = {}
     all_available_colors = []
+    
     for color_name in color_priorities:
         color_ranges_for_color = color_ranges.get(color_name, [])
         color_mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
@@ -277,6 +283,7 @@ def detect_line(frame, color_priorities, color_ranges):
         if valid:
             valid_contours[color_name] = valid
             all_available_colors.append(color_name)
+    
     for color_name in color_priorities:
         if color_name in valid_contours:
             largest_contour = max(valid_contours[color_name], key=cv2.contourArea)
@@ -285,31 +292,18 @@ def detect_line(frame, color_priorities, color_ranges):
                 max_area = area
                 best_contour = largest_contour
                 best_color = color_name
+    
     if best_contour is not None:
         M = cv2.moments(best_contour)
         if M["m00"] != 0:
-            cx = int(M["m10"] / M["m00"])
-            cy = int(M["m01"] / M["m00"])
-            if USE_ROI:
-                best_cx = cx
-                best_cy = cy + (FRAME_HEIGHT - ROI_HEIGHT)
-            else:
-                best_cx = cx
-                best_cy = cy
+            best_cx = int(M["m10"] / M["m00"])
+            best_cy = int(M["m01"] / M["m00"])
             contour_color = (0, 255, 0) if best_color != 'black' else (128, 128, 128)
-            if USE_ROI:
-                cv2.drawContours(frame[FRAME_HEIGHT-ROI_HEIGHT:FRAME_HEIGHT, 0:FRAME_WIDTH], 
-                                [best_contour], -1, contour_color, 2)
-                cv2.circle(frame, (best_cx, best_cy), 5, (255, 0, 0), -1)
-            else:
-                cv2.drawContours(frame, [best_contour], -1, contour_color, 2)
-                cv2.circle(frame, (best_cx, best_cy), 5, (255, 0, 0), -1)
+            cv2.drawContours(frame, [best_contour], -1, contour_color, 2)
+            cv2.circle(frame, (best_cx, best_cy), 5, (255, 0, 0), -1)
             cv2.line(frame, (center_x, best_cy), (best_cx, best_cy), (255, 0, 0), 2)
             error = best_cx - center_x
-            if USE_ROI:
-                hsv_value = hsv[cy, cx]
-            else:
-                hsv_value = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)[best_cy, best_cx]
+            hsv_value = hsv[best_cy, best_cx]
             h, s, v = hsv_value
             available_colors_text = "Available: " + ", ".join(all_available_colors)
             cv2.putText(frame, available_colors_text, (10, 90), 
@@ -325,13 +319,13 @@ def detect_line(frame, color_priorities, color_ranges):
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, text_color, 2)
             cv2.putText(frame, f"HSV: ({h}, {s}, {v})", (10, 60),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, text_color, 2)
-            return error, True, best_color, all_available_colors, roi
-    return 0, False, None, [], roi
+            return error, True, best_color, all_available_colors, frame
+    return 0, False, None, [], frame
 
 # Combined Detection and Line Following with Contour and Color Validation
 def detect_images_shapes_and_line(frame, prev_detections, reference_data, color_priorities, color_ranges, right_pwm, left_pwm, pause_state, max_len=5):
     # Line detection
-    error, line_found, detected_color, available_colors, roi = detect_line(frame, color_priorities, color_ranges)
+    error, line_found, detected_color, available_colors, _ = detect_line(frame, color_priorities, color_ranges)
     
     detected_name = None
     label = "Detected: None"
@@ -364,7 +358,20 @@ def detect_images_shapes_and_line(frame, prev_detections, reference_data, color_
             if cv2.contourArea(contour) < 500:
                 continue
                 
+            # Check if contour is complete
+            if not is_contour_complete(contour, SHAPE_ROI_WIDTH, FRAME_HEIGHT):
+                continue
+                
+            # Calculate aspect ratio
+            x, y, w, h = cv2.boundingRect(contour)
+            aspect_ratio = float(w) / h if h != 0 else float('inf')
+            
             for name, data in reference_data.items():
+                # Check aspect ratio
+                ref_aspect_ratio = data['aspect_ratio']
+                if abs(aspect_ratio - ref_aspect_ratio) / ref_aspect_ratio > ASPECT_RATIO_TOLERANCE:
+                    continue
+                
                 score = compare_contours(contour, data['contour'])
                 if score < best_score and score < 0.5:  # Threshold for contour similarity
                     best_score = score
@@ -497,7 +504,6 @@ def main():
                 break
                 
             time.sleep(0.01)
-            
     except KeyboardInterrupt:
         print("\nProgram stopped by user")
     finally:
