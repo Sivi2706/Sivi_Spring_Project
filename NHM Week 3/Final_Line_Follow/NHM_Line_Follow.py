@@ -222,12 +222,15 @@ def stop_motors(left_pwm, right_pwm, servo_pwm):
 
 # Initialize camera
 def setup_camera():
-    picam2 = Picamera2()
-    config = picam2.create_preview_configuration(main={"size": (FRAME_WIDTH, FRAME_HEIGHT)})
-    picam2.configure(config)
-    picam2.start()
-    time.sleep(2)  # Allow camera to warm up
-    return picam2
+    try:
+        picam2 = Picamera2()
+        picam2.configure(picam2.create_preview_configuration(main={"size": (FRAME_WIDTH, FRAME_HEIGHT)}))
+        picam2.start()
+        time.sleep(2)  # Allow camera to warm up
+        return picam2
+    except RuntimeError as e:
+        print(f"Camera initialization failed: {e}")
+        return None
 
 # Function to calibrate a specific color
 def calibrate_color(picam2, color_ranges, color_name):
@@ -466,10 +469,15 @@ def detect_line(frame, color_priorities, color_ranges):
 
     return 0, False, None, []
 
-# Main function
+# Main function (partial, showing camera setup integration)
 def main():
     left_pwm, right_pwm, servo_pwm = setup_gpio()
     picam2 = setup_camera()
+    
+    if picam2 is None:
+        print("Exiting program. Camera could not be initialized.")
+        GPIO.cleanup()
+        exit()
     
     # Load calibrated color ranges
     color_ranges = load_color_calibration()
