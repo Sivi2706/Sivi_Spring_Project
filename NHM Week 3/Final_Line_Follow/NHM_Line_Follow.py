@@ -80,6 +80,15 @@ def initialize_camera():
         print(f"Camera initialization failed: {e}")
         return None
 
+# Function to ensure the frame is in BGR format
+def ensure_bgr(frame):
+    if len(frame.shape) == 2:  # Grayscale
+        return cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+    elif frame.shape[2] == 4:  # RGBA
+        return cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+    else:
+        return frame  # Assume it's already BGR
+
 # Function to load calibrated color ranges
 def load_color_calibration():
     """Load calibrated color ranges from file or return defaults"""
@@ -246,12 +255,7 @@ def calibrate_color(picam2, color_ranges, color_name):
     
     while True:
         frame = picam2.capture_array()
-        
-        # Ensure frame is in BGR format
-        if len(frame.shape) == 2:  # Grayscale
-            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
-        elif frame.shape[2] == 4:  # RGBA
-            frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+        frame = ensure_bgr(frame)  # Ensure frame is in BGR format
         
         # Draw ROI if enabled
         if USE_ROI:
@@ -353,11 +357,7 @@ def calibrate_color(picam2, color_ranges, color_name):
 
 # Line detection function
 def detect_line(frame, color_priorities, color_ranges):
-    # Ensure frame is in BGR format
-    if len(frame.shape) == 2:  # Grayscale
-        frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
-    elif frame.shape[2] == 4:  # RGBA
-        frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+    frame = ensure_bgr(frame)  # Ensure frame is in BGR format
     
     # Apply ROI if enabled
     if USE_ROI:
@@ -490,6 +490,7 @@ def main():
     try:
         while True:
             frame = picam2.capture_array()
+            frame = ensure_bgr(frame)  # Ensure frame is in BGR format
             error, line_found, detected_color, available_colors = detect_line(frame, color_priorities, color_ranges)
             
             cv2.imshow("Line Follower", frame)
