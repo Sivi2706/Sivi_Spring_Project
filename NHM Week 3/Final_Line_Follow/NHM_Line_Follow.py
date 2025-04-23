@@ -68,6 +68,18 @@ default_color_ranges = {
     ]
 }
 
+# Function to initialize Raspberry Pi Camera
+def initialize_camera():
+    try:
+        picam2 = Picamera2()
+        picam2.configure(picam2.create_preview_configuration(main={"size": (FRAME_WIDTH, FRAME_HEIGHT)}))
+        picam2.start()
+        time.sleep(2)  # Allow camera to warm up
+        return picam2
+    except RuntimeError as e:
+        print(f"Camera initialization failed: {e}")
+        return None
+
 # Function to load calibrated color ranges
 def load_color_calibration():
     """Load calibrated color ranges from file or return defaults"""
@@ -220,18 +232,6 @@ def stop_motors(left_pwm, right_pwm, servo_pwm):
     servo_pwm.ChangeDutyCycle(SERVO_NEUTRAL)
     print("Stopped")
 
-# Initialize camera
-def setup_camera():
-    try:
-        picam2 = Picamera2()
-        picam2.configure(picam2.create_preview_configuration(main={"size": (FRAME_WIDTH, FRAME_HEIGHT)}))
-        picam2.start()
-        time.sleep(2)  # Allow camera to warm up
-        return picam2
-    except RuntimeError as e:
-        print(f"Camera initialization failed: {e}")
-        return None
-
 # Function to calibrate a specific color
 def calibrate_color(picam2, color_ranges, color_name):
     print(f"\nCalibrating {color_name} line detection...")
@@ -249,6 +249,12 @@ def calibrate_color(picam2, color_ranges, color_name):
     
     while True:
         frame = picam2.capture_array()
+        
+        # Convert frame to BGR format if needed
+        if len(frame.shape) == 2:  # If grayscale
+            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+        elif frame.shape[2] == 4:  # If RGBA
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
         
         # Draw ROI if enabled
         if USE_ROI:
@@ -338,6 +344,12 @@ def calibrate_color(picam2, color_ranges, color_name):
                 
 # Refined line detection function
 def detect_line(frame, color_priorities, color_ranges):
+    # Convert frame to BGR format if needed
+    if len(frame.shape) == 2:  # If grayscale
+        frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+    elif frame.shape[2] == 4:  # If RGBA
+        frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+    
     # Apply ROI if enabled
     if USE_ROI:
         roi_y_start = FRAME_HEIGHT - ROI_HEIGHT
@@ -469,15 +481,14 @@ def detect_line(frame, color_priorities, color_ranges):
 
     return 0, False, None, []
 
-# Main function (partial, showing camera setup integration)
+# Main function
 def main():
     left_pwm, right_pwm, servo_pwm = setup_gpio()
-    picam2 = setup_camera()
-    
+    picam2 = initialize_camera()
     if picam2 is None:
         print("Exiting program. Camera could not be initialized.")
         GPIO.cleanup()
-        exit()
+        return
     
     # Load calibrated color ranges
     color_ranges = load_color_calibration()
@@ -510,6 +521,8 @@ def main():
     try:
         while True:
             frame = picam2.capture_array()
+            
+            # Detect line and process frame
             error, line_found, detected_color, available_colors = detect_line(frame, color_priorities, color_ranges)
             
             cv2.imshow("Line Follower", frame)
@@ -557,6 +570,7 @@ def main():
         right_pwm.stop()
         servo_pwm.stop()
         cv2.destroyAllWindows()
+        picam2.stop()
         GPIO.cleanup()
         print("Resources released")
         
