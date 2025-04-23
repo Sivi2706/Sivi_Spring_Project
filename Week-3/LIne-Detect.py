@@ -6,7 +6,7 @@ import json
 import os
 from picamera2 import Picamera2
 
-# Define GPIO pins for encoders
+# Define GPIO pins
 encoderPinRight = 23      # Right encoder
 encoderPinLeft = 24       # Left encoder
 
@@ -15,14 +15,15 @@ WHEEL_DIAMETER = 4.05      # cm
 PULSES_PER_REVOLUTION = 20
 WHEEL_CIRCUMFERENCE = np.pi * WHEEL_DIAMETER  # cm
 
-# Line detection parameters
+# Line following parameters
 MIN_CONTOUR_AREA = 800     # Minimum area for valid contours
 FRAME_WIDTH = 640          # Camera frame width
 FRAME_HEIGHT = 480         # Camera frame height
 
 # ROI parameters
-USE_TOP_ROI = True         # Enable top ROI for line angle determination
-TOP_ROI_HEIGHT = 150       # Height of the top ROI from the top of the frame
+USE_ROI = True             # Enable ROI for line detection
+BOTTOM_ROI_HEIGHT = int(FRAME_HEIGHT * 0.30)  # 30% for bottom PID ROI
+TOP_ROI_HEIGHT = int(FRAME_HEIGHT * 0.70)     # 70% for top line angle ROI
 
 # Variables to store encoder counts
 right_counter = 0
@@ -34,20 +35,20 @@ CALIBRATION_FILE = "color_calibration.json"
 # Default color ranges (HSV format)
 default_color_ranges = {
     'red': [
-        ([0, 167, 154], [10, 247, 234]),    # Lower red range
-        ([170, 167, 154], [180, 247, 234])  # Upper red range
+        ([0, 167, 154], [10, 247, 234]),
+        ([170, 167, 154], [180, 247, 234])
     ],
     'blue': [
-        ([100, 167, 60], [130, 255, 95])    # Blue range
+        ([100, 167, 60], [130, 255, 95])
     ],
     'green': [
-        ([40, 180, 110], [75, 255, 190])    # Green range
+        ([40, 180, 110], [75, 255, 190])
     ],
     'yellow': [
-        ([25, 150, 150], [35, 255, 255])    # Yellow range
+        ([25, 150, 150], [35, 255, 255])
     ],
     'black': [
-        ([0, 0, 0], [179, 100, 75])         # Black range
+        ([0, 0, 0], [179, 100, 75])
     ]
 }
 
@@ -118,7 +119,7 @@ def left_encoder_callback(channel):
     global left_counter
     left_counter += 1
 
-# GPIO Setup for encoders
+# GPIO Setup
 def setup_gpio():
     GPIO.setmode(GPIO.BCM)
     GPIO.setwarnings(False)
@@ -138,7 +139,7 @@ def setup_camera():
     time.sleep(2)
     return picam2
 
-# Function to allow user to calibrate black line detection parameters
+# Function to calibrate black line detection
 def calibrate_black_line(picam2, color_ranges):
     print("\nCalibrating black line detection...")
     print("Place the camera to view the black line and press 'c' to capture and calibrate.")
@@ -147,10 +148,12 @@ def calibrate_black_line(picam2, color_ranges):
     while True:
         frame = picam2.capture_array()
         
-        if USE_TOP_ROI:
-            roi_y_end = TOP_ROI_HEIGHT
-            cv2.rectangle(frame, (0, 0), (FRAME_WIDTH, roi_y_end), (255, 255, 0), 2)
-            roi = frame[0:roi_y_end, 0:FRAME_WIDTH]
+        if USE_ROI:
+            bottom_roi_y_start = FRAME_HEIGHT - BOTTOM_ROI_HEIGHT
+            cv2.rectangle(frame, (0, bottom_roi_y_start), (FRAME_WIDTH, FRAME_HEIGHT), (255, 255, 0), 2)
+            top_roi_y_end = TOP_ROI_HEIGHT
+            cv2.rectangle(frame, (0, 0), (FRAME_WIDTH, top_roi_y_end), (0, 255, 255), 2)
+            roi = frame[bottom_roi_y_start:FRAME_HEIGHT, 0:FRAME_WIDTH]
         else:
             roi = frame
             
@@ -178,13 +181,16 @@ def calibrate_black_line(picam2, color_ranges):
                     if len(roi_pixels) > 0:
                         h_min, s_min, v_min = np.min(roi_pixels, axis=0)
                         h_max, s_max, v_max = np.max(roi_pixels, axis=0)
+                        
                         h_min = max(0, h_min - 10)
                         s_min = max(0, s_min - 10)
                         v_min = max(0, v_min - 10)
                         h_max = min(179, h_max + 10)
                         s_max = min(255, s_max + 40)
                         v_max = min(255, v_max + 40)
+                        
                         color_ranges['black'] = [([h_min, s_min, v_min], [h_max, s_max, v_max])]
+                        
                         print(f"Updated black line HSV range: ({h_min}, {s_min}, {v_min}) to ({h_max}, {s_max}, {v_max})")
                         calibrated_mask = cv2.inRange(hsv_roi, np.array([h_min, s_min, v_min]), np.array([h_max, s_max, v_max]))
                         cv2.imshow("Calibrated Black Line Mask", calibrated_mask)
@@ -200,128 +206,144 @@ def calibrate_black_line(picam2, color_ranges):
                 
     cv2.destroyWindow("Calibration")
 
-# Refined line detection function with angle determination
-# Refined line detection function with angle determination
+# Line detection function with top and bottom ROIs
 def detect_line(frame, color_priorities, color_ranges):
-    if USE_TOP_ROI:
-        roi_y_end = TOP_ROI_HEIGHT
-        roi = frame[0:roi_y_end, 0:FRAME_WIDTH]
-        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-    else:
-        roi = frame
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    
     center_x = FRAME_WIDTH // 2
     cv2.line(frame, (center_x, 0), (center_x, FRAME_HEIGHT), (0, 0, 255), 2)
     
-    if USE_TOP_ROI:
-        cv2.rectangle(frame, (0, 0), (FRAME_WIDTH, roi_y_end), (255, 255, 0), 2)
-
-    best_contour = None
-    best_color = None
-    best_cx, best_cy = -1, -1
-    max_area = 0
+    # Bottom ROI for PID (30% from bottom)
+    bottom_roi_y_start = FRAME_HEIGHT - BOTTOM_ROI_HEIGHT
+    bottom_roi = frame[bottom_roi_y_start:FRAME_HEIGHT, 0:FRAME_WIDTH]
+    bottom_hsv = cv2.cvtColor(bottom_roi, cv2.COLOR_BGR2HSV)
+    cv2.rectangle(frame, (0, bottom_roi_y_start), (FRAME_WIDTH, FRAME_HEIGHT), (255, 255, 0), 2)
+    
+    # Top ROI for line angle (70% from top)
+    top_roi_y_end = TOP_ROI_HEIGHT
+    top_roi = frame[0:top_roi_y_end, 0:FRAME_WIDTH]
+    top_hsv = cv2.cvtColor(top_roi, cv2.COLOR_BGR2HSV)
+    cv2.rectangle(frame, (0, 0), (FRAME_WIDTH, top_roi_y_end), (0, 255, 255), 2)
+    
+    bottom_best_contour = None
+    bottom_best_color = None
+    bottom_best_cx, bottom_best_cy = -1, -1
+    bottom_max_area = 0
+    
+    top_best_contour = None
+    top_best_color = None
+    top_max_area = 0
     line_angle = 0
-
+    
     valid_contours = {}
     all_available_colors = []
-
+    
     for color_name in color_priorities:
         color_ranges_for_color = color_ranges.get(color_name, [])
-        color_mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
-
+        bottom_color_mask = np.zeros(bottom_hsv.shape[:2], dtype=np.uint8)
+        top_color_mask = np.zeros(top_hsv.shape[:2], dtype=np.uint8)
+        
         for lower, upper in color_ranges_for_color:
             lower = np.array(lower, dtype=np.uint8)
             upper = np.array(upper, dtype=np.uint8)
-            color_mask = cv2.bitwise_or(color_mask, cv2.inRange(hsv, lower, upper))
+            bottom_color_mask = cv2.bitwise_or(bottom_color_mask, cv2.inRange(bottom_hsv, lower, upper))
+            top_color_mask = cv2.bitwise_or(top_color_mask, cv2.inRange(top_hsv, lower, upper))
         
         kernel = np.ones((5, 5), np.uint8)
-        color_mask = cv2.morphologyEx(color_mask, cv2.MORPH_CLOSE, kernel)
+        bottom_color_mask = cv2.morphologyEx(bottom_color_mask, cv2.MORPH_CLOSE, kernel)
+        top_color_mask = cv2.morphologyEx(top_color_mask, cv2.MORPH_CLOSE, kernel)
         
         if color_name == 'black':
-            cv2.imshow(f"{color_name} Mask", color_mask)
+            cv2.imshow(f"{color_name} Bottom Mask", bottom_color_mask)
+            cv2.imshow(f"{color_name} Top Mask", top_color_mask)
         
-        contours, _ = cv2.findContours(color_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        valid = [cnt for cnt in contours if cv2.contourArea(cnt) > MIN_CONTOUR_AREA]
-
-        if valid:
-            valid_contours[color_name] = valid
+        bottom_contours, _ = cv2.findContours(bottom_color_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        top_contours, _ = cv2.findContours(top_color_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        bottom_valid = [cnt for cnt in bottom_contours if cv2.contourArea(cnt) > MIN_CONTOUR_AREA]
+        top_valid = [cnt for cnt in top_contours if cv2.contourArea(cnt) > MIN_CONTOUR_AREA]
+        
+        if bottom_valid or top_valid:
+            valid_contours[color_name] = {'bottom': bottom_valid, 'top': top_valid}
             all_available_colors.append(color_name)
-
+    
     for color_name in color_priorities:
         if color_name in valid_contours:
-            largest_contour = max(valid_contours[color_name], key=cv2.contourArea)
-            area = cv2.contourArea(largest_contour)
-            if area > max_area:
-                max_area = area
-                best_contour = largest_contour
-                best_color = color_name
-
-    if best_contour is not None:
-        M = cv2.moments(best_contour)
+            # Bottom ROI for PID
+            if valid_contours[color_name]['bottom']:
+                largest_bottom_contour = max(valid_contours[color_name]['bottom'], key=cv2.contourArea)
+                area = cv2.contourArea(largest_bottom_contour)
+                if area > bottom_max_area:
+                    bottom_max_area = area
+                    bottom_best_contour = largest_bottom_contour
+                    bottom_best_color = color_name
+            
+            # Top ROI for angle
+            if valid_contours[color_name]['top']:
+                largest_top_contour = max(valid_contours[color_name]['top'], key=cv2.contourArea)
+                area = cv2.contourArea(largest_top_contour)
+                if area > top_max_area:
+                    top_max_area = area
+                    top_best_contour = largest_top_contour
+                    top_best_color = color_name
+    
+    error = 0
+    line_found = False
+    metadata = {}
+    
+    # Process bottom ROI for PID
+    if bottom_best_contour is not None:
+        M = cv2.moments(bottom_best_contour)
         if M["m00"] != 0:
             cx = int(M["m10"] / M["m00"])
             cy = int(M["m01"] / M["m00"])
+            bottom_best_cx = cx
+            bottom_best_cy = cy + bottom_roi_y_start
             
-            if USE_TOP_ROI:
-                best_cx = cx
-                best_cy = cy
-            else:
-                best_cx = cx
-                best_cy = cy
-
-            contour_color = (0, 255, 0) if best_color != 'black' else (128, 128, 128)
+            contour_color = (0, 255, 0) if bottom_best_color != 'black' else (128, 128, 128)
+            cv2.drawContours(frame[bottom_roi_y_start:FRAME_HEIGHT, 0:FRAME_WIDTH], 
+                            [bottom_best_contour], -1, contour_color, 2)
+            cv2.circle(frame, (bottom_best_cx, bottom_best_cy), 5, (255, 0, 0), -1)
+            cv2.line(frame, (center_x, bottom_best_cy), (bottom_best_cx, bottom_best_cy), (255, 0, 0), 2)
             
-            if USE_TOP_ROI:
-                cv2.drawContours(frame[0:TOP_ROI_HEIGHT, 0:FRAME_WIDTH], 
-                               [best_contour], -1, contour_color, 2)
-                cv2.circle(frame, (best_cx, best_cy), 5, (255, 0, 0), -1)
-            else:
-                cv2.drawContours(frame, [best_contour], -1, contour_color, 2)
-                cv2.circle(frame, (best_cx, best_cy), 5, (255, 0, 0), -1)
-                
-            cv2.line(frame, (center_x, best_cy), (best_cx, best_cy), (255, 0, 0), 2)
-
-            error = best_cx - center_x
-
-            # Calculate line angle using contour points
-            [vx, vy, x, y] = cv2.fitLine(best_contour, cv2.DIST_L2, 0, 0.01, 0.01)
-            line_angle = np.arctan2(vy, vx) * 180 / np.pi
-
-            if USE_TOP_ROI:
-                hsv_value = hsv[cy, cx]
-            else:
-                hsv_value = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)[best_cy, best_cx]
-                
+            error = bottom_best_cx - center_x
+            line_found = True
+            
+            hsv_value = bottom_hsv[cy, cx]
             h, s, v = hsv_value
-
-            available_colors_text = "Available: " + ", ".join(all_available_colors)
-            cv2.putText(frame, available_colors_text, (10, 120), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-
-            if best_color == 'red':
-                text_color = (0, 0, 255)
-            elif best_color == 'green':
-                text_color = (0, 255, 0)
-            elif best_color == 'blue':
-                text_color = (255, 0, 0)
-            elif best_color == 'yellow':
-                text_color = (0, 255, 255)
-            elif best_color == 'black':
-                text_color = (128, 128, 128)
-            else:
-                text_color = (255, 255, 255)
-                
-            cv2.putText(frame, f"{best_color.capitalize()} Line, Error: {error}", (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, text_color, 2)
-            cv2.putText(frame, f"HSV: ({h}, {s}, {v})", (10, 60),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, text_color, 2)
-            cv2.putText(frame, f"Angle: {line_angle:.2f} deg", (10, 90),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, text_color, 2)
-
-            return error, True, best_color, all_available_colors
-
-    return 0, False, None, []
+            metadata['bottom_color'] = bottom_best_color
+            metadata['error'] = error
+            metadata['hsv'] = (int(h), int(s), int(v))
+    
+    # Process top ROI for line angle
+    if top_best_contour is not None:
+        # Fit a line to the contour
+        [vx, vy, x0, y0] = cv2.fitLine(top_best_contour, cv2.DIST_L2, 0, 0.01, 0.01)
+        line_angle = np.arctan2(vy, vx) * 180 / np.pi
+        line_angle = line_angle % 180  # Normalize to 0-180 degrees
+        
+        contour_color = (0, 255, 0) if top_best_color != 'black' else (128, 128, 128)
+        cv2.drawContours(frame[0:top_roi_y_end, 0:FRAME_WIDTH], 
+                        [top_best_contour], -1, contour_color, 2)
+        
+        # Draw fitted line
+        left_y = int(y0 - (x0 * vy / vx))
+        right_y = int(y0 + ((FRAME_WIDTH - x0) * vy / vx))
+        cv2.line(frame, (0, left_y), (FRAME_WIDTH, right_y), (0, 0, 255), 2)
+        
+        metadata['top_color'] = top_best_color
+        metadata['line_angle'] = round(line_angle, 2)
+    
+    # Display metadata
+    y_offset = 30
+    for key, value in metadata.items():
+        cv2.putText(frame, f"{key}: {value}", (10, y_offset),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        y_offset += 30
+    
+    available_colors_text = "Available: " + ", ".join(all_available_colors)
+    cv2.putText(frame, available_colors_text, (10, y_offset), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+    
+    return error, line_found, bottom_best_color, all_available_colors
 
 # Main function
 def main():
@@ -337,14 +359,14 @@ def main():
     
     calibrate_black_line(picam2, color_ranges)
     
-    print("Line detection with color and angle detection started. Press 'q' in the display window or Ctrl+C to stop.")
+    print("Line follower with PID and angle detection started. Press 'q' or Ctrl+C to stop.")
     
     try:
         while True:
             frame = picam2.capture_array()
             error, line_found, detected_color, available_colors = detect_line(frame, color_priorities, color_ranges)
             
-            cv2.imshow("Line Detector", frame)
+            cv2.imshow("Line Follower", frame)
             key = cv2.waitKey(1) & 0xFF
             
             if key == ord('q'):
@@ -353,7 +375,7 @@ def main():
                 calibrate_black_line(picam2, color_ranges)
             
             if line_found:
-                print(f"Detected {detected_color} line (Available: {', '.join(available_colors)})")
+                print(f"Line detected - {detected_color} line, Error: {error}, Available: {', '.join(available_colors)}")
             else:
                 print("No line detected.")
                 
