@@ -178,136 +178,68 @@ def get_color_choices():
             return selected_colors
         print("Invalid choice. Please try again.")
 
-# Load and preprocess reference images using ORB
-def load_reference_images():
-    reference_images = {}
-    orb = cv2.ORB_create()
+# Preprocess and store reference images and shapes
+def preprocess_reference_data():
+    reference_data = {}
     script_dir = os.path.dirname(os.path.abspath(__file__))
+    
     for filename in os.listdir(script_dir):
         if filename.endswith(('.png', '.jpg', '.jpeg')):
             img_path = os.path.join(script_dir, filename)
-            img = cv2.imread(img_path, 0)
-            keypoints, descriptors = orb.detectAndCompute(img, None)
-            if descriptors is not None:
-                reference_images[filename] = (keypoints, descriptors, img)
-            else:
-                print(f"Warning: No features detected in {filename}")
-    return reference_images, orb
-
-# ORB Feature Matching with Orientation Detection
-# ORB Feature Matching with Orientation Detection
-def match_image(frame, reference_images, orb):
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    keypoints, descriptors = orb.detectAndCompute(gray, None)
-    if descriptors is None:
-        return None, None
-    matches_dict = {}
-    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
-    best_match = None
-    best_matches = None
-    best_ref_keypoints = None
-    
-    # Increase this threshold to require more matching features
-    min_match_threshold = 50  # Increased from 30
-    
-    for name, (ref_keypoints, ref_descriptors, ref_img) in reference_images.items():
-        matches = bf.match(descriptors, ref_descriptors)
-        matches_dict[name] = len(matches)
-        # Only consider matches above our higher threshold
-        if len(matches) > min_match_threshold:
-            matches = sorted(matches, key=lambda x: x.distance)
-            # Reject matches with average distance above threshold
-            avg_distance = sum(m.distance for m in matches[:20]) / min(20, len(matches))
-            if avg_distance > 40:  # Lower values are better matches
+            img = cv2.imread(img_path)
+            if img is None:
                 continue
                 
-            if not best_match or len(matches) > matches_dict[best_match]:
-                best_match = name
-                best_matches = matches[:10]
-                best_ref_keypoints = ref_keypoints
-    
-    print("\nMatch Results:")
-    for name, count in sorted(matches_dict.items(), key=lambda x: x[1], reverse=True):
-        print(f"{name}: {count} matches")
-    
-    if best_match:
-        # Additional verification for homography quality
-        src_pts = np.float32([keypoints[m.queryIdx].pt for m in best_matches]).reshape(-1, 1, 2)
-        dst_pts = np.float32([best_ref_keypoints[m.trainIdx].pt for m in best_matches]).reshape(-1, 1, 2)
-        M, mask = cv2.findHomography(dst_pts, src_pts, cv2.RANSAC, 5.0)
-        
-        # Check if we have enough inliers after RANSAC (good matches)
-        inlier_count = np.sum(mask) if mask is not None else 0
-        if inlier_count < 7:  # Require at least 7 good matches
-            return None, None
+            # Preprocess image
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+            _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            edges = cv2.Canny(thresh, 30, 200)
+            kernel = np.ones((3,3), np.uint8)
+            edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+            contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
-        if M is not None:
-            h, w = reference_images[best_match][2].shape
-            ref_center = (w // 2, h // 2)
-            ref_tip = (w // 2, 0)
-            center = cv2.perspectiveTransform(np.array([[ref_center]], dtype=np.float32), M)[0][0]
-            tip = cv2.perspectiveTransform(np.array([[ref_tip]], dtype=np.float32), M)[0][0]
-            dx = tip[0] - center[0]
-            dy = tip[1] - center[1]
-            angle = np.degrees(np.arctan2(dy, dx)) % 360
-            return best_match, (center, tip, angle)
-    return None, None
+            if not contours:
+                continue
+                
+            # Get largest contour
+            main_contour = max(contours, key=cv2.contourArea)
+            if cv2.contourArea(main_contour) < 500:
+                continue
+                
+            # Create mask for color histogram
+            mask = np.zeros(img.shape[:2], dtype=np.uint8)
+            cv2.drawContours(mask, [main_contour], -1, 255, -1)
+            
+            # Calculate color histogram in HSV
+            hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+            hist = cv2.calcHist([hsv], [0, 1, 2], mask, [8, 8, 8], [0, 180, 0, 256, 0, 256])
+            cv2.normalize(hist, hist)
+            
+            # Store contour and histogram
+            reference_data[filename] = {
+                'contour': main_contour,
+                'color_hist': hist,
+                'image': img
+            }
+    
+    return reference_data
 
+# Compare contours using Hu Moments
+def compare_contours(c1, c2):
+    if c1 is None or c2 is None:
+        return float('inf')
+    m1 = cv2.moments(c1)
+    m2 = cv2.moments(c2)
+    if m1['m00'] == 0 or m2['m00'] == 0:
+        return float('inf')
+    hu1 = cv2.HuMoments(m1)
+    hu2 = cv2.HuMoments(m2)
+    return cv2.matchShapes(c1, c2, cv2.CONTOURS_MATCH_I1, 0)
 
-# Improved Shape Detection Function
-def detect_shapes(frame):
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    edges = cv2.Canny(thresh, 30, 200)
-    kernel = np.ones((3,3), np.uint8)
-    edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
-    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    shape_detected = None
-    for contour in contours:
-        if cv2.contourArea(contour) < 500:
-            continue
-        epsilon = 0.01 * cv2.arcLength(contour, True)
-        approx = cv2.approxPolyDP(contour, epsilon, True)
-        x, y, w, h = cv2.boundingRect(approx)
-        cv2.drawContours(frame, [approx], -1, (0, 255, 0), 2)
-        cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 0, 0), 2)
-        area = cv2.contourArea(contour)
-        perimeter = cv2.arcLength(contour, True)
-        circularity = 4 * np.pi * area / (perimeter * perimeter) if perimeter > 0 else 0
-        defect_count = 0
-        max_defect = 0
-        try:
-            hull = cv2.convexHull(contour, returnPoints=False)
-            if hull is not None and len(hull) > 3 and len(contour) > 3:
-                defects = cv2.convexityDefects(contour, hull)
-                if defects is not None:
-                    defect_count = len(defects)
-                    max_defect = np.max(defects[:, 0, 3]) if defect_count > 0 else 0
-        except cv2.error as e:
-            print(f"Convexity defect calculation skipped: {e}")
-        print(f"Debug - Sides: {len(approx)}, Circularity: {circularity:.3f}, Defects: {defect_count}, Max Defect: {max_defect}")
-        sides = len(approx)
-        if sides == 3:
-            shape_detected = "Triangle"
-        elif sides == 4:
-            aspect_ratio = float(w) / h
-            shape_detected = "Square" if 0.9 <= aspect_ratio <= 1.1 else "Rectangle"
-        elif sides == 5:
-            shape_detected = "Pentagon"
-        elif sides == 6:
-            shape_detected = "Hexagon"
-        else:
-            if circularity > 0.8:
-                shape_detected = "Circle"
-            elif 0.5 <= circularity <= 0.8 and defect_count > 0 and max_defect > 300:
-                shape_detected = "Pac-Man"
-            else:
-                shape_detected = "Unknown"
-        cv2.putText(frame, shape_detected, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 
-                   0.6, (0, 255, 255), 2)
-        break
-    return shape_detected
+# Compare color histograms
+def compare_color_histograms(hist1, hist2):
+    return cv2.compareHist(hist1, hist2, cv2.HISTCMP_CHISQR)
 
 # Line Detection Function
 def detect_line(frame, color_priorities, color_ranges):
@@ -392,85 +324,114 @@ def detect_line(frame, color_priorities, color_ranges):
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, text_color, 2)
             cv2.putText(frame, f"HSV: ({h}, {s}, {v})", (10, 60),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, text_color, 2)
-            return error, True, best_color, all_available_colors
-    return 0, False, None, []
+            return error, True, best_color, all_available_colors, roi
+    return 0, False, None, [], roi
 
-# Check if a shape or image is recognizable (not Unknown)
-def is_valid_detection(detection):
-    return detection is not None and detection != "Unknown"
-
-# Combined Image and Shape Detection with Line Following
-# Combined Image and Shape Detection with Line Following
-def detect_images_shapes_and_line(frame, prev_detections, reference_images, orb, color_priorities, color_ranges, right_pwm, left_pwm, pause_state, max_len=5):
-    # Line detection first
-    error, line_found, detected_color, available_colors = detect_line(frame, color_priorities, color_ranges)
+# Combined Detection and Line Following with Contour and Color Validation
+def detect_images_shapes_and_line(frame, prev_detections, reference_data, color_priorities, color_ranges, right_pwm, left_pwm, pause_state, max_len=5):
+    # Line detection
+    error, line_found, detected_color, available_colors, roi = detect_line(frame, color_priorities, color_ranges)
     
-    # Only perform image/shape detection if a line is found
-    match_name = None
-    shape_detected = None
-    if line_found:
-        match_name, orientation = match_image(frame, reference_images, orb)
-        if not match_name:
-            shape_detected = detect_shapes(frame)
-    
-    current_detection = match_name if match_name else shape_detected
-    prev_detections.append(current_detection)
-    if len(prev_detections) > max_len:
-        prev_detections.popleft()
-    
-    valid_detections = [d for d in prev_detections if is_valid_detection(d)]
     detected_name = None
     label = "Detected: None"
     
-    if valid_detections:
-        detected_name = max(set(valid_detections), key=valid_detections.count)
-        label = f"Detected: {detected_name}"
-        if match_name and orientation:
-            center, tip, angle = orientation
-            cv2.arrowedLine(frame, (int(center[0]), int(center[1])), 
-                           (int(tip[0]), int(tip[1])), (0, 255, 0), 2, tipLength=0.3)
-            label += f" | Angle: {angle:.1f}°"
-            print(f"Orientation Detected: {angle:.1f} degrees")
-    
-    cv2.rectangle(frame, (5, 5), (400, 40), (0, 0, 0), -1)
-    cv2.putText(frame, label, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-    
-    # Check if we need to enter pause state - only for confirmed shapes/images (not Unknown)
-    should_pause = False
-    if detected_name and not pause_state['active']:
-        # Only pause if we have a valid shape or image (not "Unknown")
-        if is_valid_detection(detected_name):
-            should_pause = True
-            pause_state['active'] = True
-            pause_state['start_time'] = time.time()
-            pause_state['detected_object'] = detected_name
-            stop_motors(right_pwm, left_pwm)
-            print(f"Confirmed detection: {detected_name}. Pausing for 5 seconds.")
+    # Only perform shape/image detection in ROI if line is found
+    if line_found and USE_ROI:
+        # Preprocess ROI for shape detection
+        roi_y_start = FRAME_HEIGHT - ROI_HEIGHT
+        roi_frame = frame[roi_y_start:FRAME_HEIGHT, 0:FRAME_WIDTH]
+        gray = cv2.cvtColor(roi_frame, cv2.COLOR_BGR2GRAY)
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        edges = cv2.Canny(thresh, 30, 200)
+        kernel = np.ones((3,3), np.uint8)
+        edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        best_match = None
+        best_score = float('inf')
+        best_contour = None
+        
+        # Compare contours with reference data
+        for contour in contours:
+            if cv2.contourArea(contour) < 500:
+                continue
+                
+            for name, data in reference_data.items():
+                score = compare_contours(contour, data['contour'])
+                if score < best_score and score < 0.5:  # Threshold for contour similarity
+                    best_score = score
+                    best_match = name
+                    best_contour = contour
+        
+        # Validate color if we have a contour match
+        if best_match and best_contour is not None:
+            # Create mask for current contour
+            mask = np.zeros(roi_frame.shape[:2], dtype=np.uint8)
+            cv2.drawContours(mask, [best_contour], -1, 255, -1)
             
-            # Display timer on frame
-            cv2.rectangle(frame, (5, 45), (400, 85), (0, 0, 0), -1)
-            cv2.putText(frame, "Paused: 5.0s remaining", (10, 75), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-        else:
-            # If detected as "Unknown", log it but keep moving
-            print(f"Ignoring unconfirmed shape detection: {detected_name}")
+            # Calculate color histogram for current contour
+            hsv = cv2.cvtColor(roi_frame, cv2.COLOR_BGR2HSV)
+            hist = cv2.calcHist([hsv], [0, 1, 2], mask, [8, 8, 8], [0, 180, 0, 256, 0, 256])
+            cv2.normalize(hist, hist)
+            
+            # Compare with reference histogram
+            color_score = compare_color_histograms(hist, reference_data[best_match]['color_hist'])
+            
+            # Validate match based on color similarity
+            if color_score < 50:  # Threshold for color histogram similarity
+                detected_name = best_match
+                # Draw contour in ROI
+                cv2.drawContours(frame[roi_y_start:FRAME_HEIGHT, 0:FRAME_WIDTH], 
+                               [best_contour], -1, (0, 255, 0), 2)
+                # Calculate bounding box for text
+                x, y, w, h = cv2.boundingRect(best_contour)
+                y = y + roi_y_start  # Adjust for ROI offset
+                cv2.putText(frame, detected_name, (x, y - 10), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                label = f"Detected: {detected_name}"
+                print(f"Confirmed {detected_name} with contour score: {best_score:.3f}, color score: {color_score:.3f}")
+            else:
+                print(f"Color validation failed for {best_match}. Score: {color_score:.3f}")
+                detected_name = None
+                label = "Detected: None"
     
-    # Check if we're in pause state
+    # Update detection history
+    prev_detections.append(detected_name)
+    if len(prev_detections) > max_len:
+        prev_detections.popleft()
+    
+    valid_detections = [d for d in prev_detections if d is not None]
+    
+    # Pause logic
+    should_pause = False
+    if valid_detections and not pause_state['active']:
+        confirmed_name = max(set(valid_detections), key=valid_detections.count)
+        should_pause = True
+        pause_state['active'] = True
+        pause_state['start_time'] = time.time()
+        pause_state['detected_object'] = confirmed_name
+        stop_motors(right_pwm, left_pwm)
+        print(f"Confirmed detection: {confirmed_name}. Pausing for 5 seconds.")
+        
+        cv2.rectangle(frame, (5, 45), (400, 85), (0, 0, 0), -1)
+        cv2.putText(frame, "Paused: 5.0s remaining", (10, 75), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+    
+    # Handle pause state
     if pause_state['active']:
         elapsed = time.time() - pause_state['start_time']
         remaining = max(5.0 - elapsed, 0)
         
-        # Update display with timer
         cv2.rectangle(frame, (5, 45), (400, 85), (0, 0, 0), -1)
         cv2.putText(frame, f"Paused: {remaining:.1f}s remaining", (10, 75), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
         
-        # Check if pause time is over
         if remaining <= 0:
             pause_state['active'] = False
             print(f"Resume line following after {pause_state['detected_object']} detection")
     
-    # Only do line following if not in pause state
+    # Line following
     if not pause_state['active']:
         if line_found:
             if error > TURN_THRESHOLD:
@@ -486,8 +447,10 @@ def detect_images_shapes_and_line(frame, prev_detections, reference_images, orb,
             move_backward(right_pwm, left_pwm, REVERSE_SPEED)
             print("Reversing to find line...")
     
+    cv2.rectangle(frame, (5, 5), (400, 40), (0, 0, 0), -1)
+    cv2.putText(frame, label, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+    
     return frame, detected_name, error, line_found, detected_color, available_colors, pause_state
-
 
 # Main function
 def main():
@@ -504,10 +467,9 @@ def main():
         GPIO.cleanup()
         return
     
-    reference_images, orb = load_reference_images()
+    reference_data = preprocess_reference_data()
     prev_detections = deque()
     
-    # Initialize pause state
     pause_state = {'active': False, 'start_time': 0, 'detected_object': None}
     
     print("Combined image/shape detection and line follower started. Press 'q' to stop.")
@@ -521,14 +483,13 @@ def main():
                 frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
             
             output_frame, detected_name, error, line_found, detected_color, available_colors, pause_state = detect_images_shapes_and_line(
-                frame, prev_detections, reference_images, orb, color_priorities, color_ranges, right_pwm, left_pwm, pause_state)
+                frame, prev_detections, reference_data, color_priorities, color_ranges, right_pwm, left_pwm, pause_state)
             
             cv2.imshow("Combined Detection and Line Follower", output_frame)
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
                 break
                 
-            # Small sleep to prevent overwhelming the CPU
             time.sleep(0.01)
             
     except KeyboardInterrupt:
