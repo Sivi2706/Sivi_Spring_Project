@@ -260,6 +260,12 @@ def detect_line(frame, color_priorities, color_ranges):
     center_x = FRAME_WIDTH // 2
     cv2.line(frame, (center_x, 0), (center_x, FRAME_HEIGHT), (0, 0, 255), 2)
     
+    # Preprocess for contour detection
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    cv2.imshow("Line Threshold", thresh)
+    
     best_contour = None
     best_color = None
     best_cx, best_cy = -1, -1
@@ -283,6 +289,20 @@ def detect_line(frame, color_priorities, color_ranges):
         if valid:
             valid_contours[color_name] = valid
             all_available_colors.append(color_name)
+    
+    # Create an image to show all line contours
+    line_contour_display = np.zeros_like(frame)
+    for color_name in valid_contours:
+        for cnt in valid_contours[color_name]:
+            color = {
+                'red': (0, 0, 255),
+                'green': (0, 255, 0),
+                'blue': (255, 0, 0),
+                'yellow': (0, 255, 255),
+                'black': (128, 128, 128)
+            }.get(color_name, (255, 255, 255))
+            cv2.drawContours(line_contour_display, [cnt], -1, color, 2)
+    cv2.imshow("Line Contours", line_contour_display)
     
     for color_name in color_priorities:
         if color_name in valid_contours:
@@ -319,6 +339,12 @@ def detect_line(frame, color_priorities, color_ranges):
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, text_color, 2)
             cv2.putText(frame, f"HSV: ({h}, {s}, {v})", (10, 60),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, text_color, 2)
+            
+            # Show best line contour separately
+            best_line_contour_display = np.zeros_like(frame)
+            cv2.drawContours(best_line_contour_display, [best_contour], -1, contour_color, 2)
+            cv2.imshow("Best Line Contour", best_line_contour_display)
+            
             return error, True, best_color, all_available_colors, frame
     return 0, False, None, [], frame
 
@@ -344,10 +370,21 @@ def detect_images_shapes_and_line(frame, prev_detections, reference_data, color_
         gray = cv2.cvtColor(shape_roi_frame, cv2.COLOR_BGR2GRAY)
         blurred = cv2.GaussianBlur(gray, (5, 5), 0)
         _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        cv2.imshow("Shape Threshold", thresh)
+        
         edges = cv2.Canny(thresh, 30, 200)
+        cv2.imshow("Shape Edges", edges)
+        
         kernel = np.ones((3,3), np.uint8)
         edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
         contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        # Create an image to show all shape contours
+        shape_contour_display = np.zeros((FRAME_HEIGHT, SHAPE_ROI_WIDTH, 3), dtype=np.uint8)
+        for contour in contours:
+            if cv2.contourArea(contour) >= 500:
+                cv2.drawContours(shape_contour_display, [contour], -1, (0, 255, 0), 2)
+        cv2.imshow("Shape Contours", shape_contour_display)
         
         best_match = None
         best_score = float('inf')
@@ -404,10 +441,15 @@ def detect_images_shapes_and_line(frame, prev_detections, reference_data, color_
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
                 label = f"Detected: {detected_name}"
                 print(f"Confirmed {detected_name} with contour score: {best_score:.3f}, color score: {color_score:.3f}")
+                
+                # Show best shape contour separately
+                best_shape_contour_display = np.zeros((FRAME_HEIGHT, SHAPE_ROI_WIDTH, 3), dtype=np.uint8)
+                cv2.drawContours(best_shape_contour_display, [best_contour], -1, (0, 255, 0), 2)
+                cv2.imshow("Best Shape Contour", best_shape_contour_display)
             else:
                 print(f"Color validation failed for {best_match}. Score: {color_score:.3f}")
                 detected_name = None
-                label = "Detected: None"
+                label ="Detected: None"
     
     # Update detection history
     prev_detections.append(detected_name)
@@ -491,12 +533,14 @@ def main():
             frame = picam2.capture_array()
             
             if len(frame.shape) == 2:
-                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+                display_frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
             elif frame.shape[2] == 4:
-                frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+                display_frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+            else:
+                display_frame = frame.copy()
             
             output_frame, detected_name, error, line_found, detected_color, available_colors, pause_state = detect_images_shapes_and_line(
-                frame, prev_detections, reference_data, color_priorities, color_ranges, right_pwm, left_pwm, pause_state)
+                display_frame, prev_detections, reference_data, color_priorities, color_ranges, right_pwm, left_pwm, pause_state)
             
             cv2.imshow("Combined Detection and Line Follower", output_frame)
             key = cv2.waitKey(1) & 0xFF
@@ -504,6 +548,7 @@ def main():
                 break
                 
             time.sleep(0.01)
+            
     except KeyboardInterrupt:
         print("\nProgram stopped by user")
     finally:
