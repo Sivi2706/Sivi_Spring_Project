@@ -201,13 +201,12 @@ def stop_motors(right_pwm, left_pwm):
     GPIO.output(IN3, GPIO.LOW)
     GPIO.output(IN4, GPIO.LOW)
 
-# Function to automatically calibrate a specific color with user confirmation
+# Function to calibrate a specific color
 def calibrate_color(picam2, color_ranges, color_name):
     print(f"\nCalibrating {color_name} line detection...")
-    print(f"Place the camera to view the {color_name} line and press 'c' to calibrate.")
-    print("Press 'q' to skip calibration for this color.")
-    
-    # Define initial broad HSV ranges for each color
+    print("View the camera feed, position the camera over the line, and press 'c' to start calibration or 'q' to skip.")
+
+    # Initial broad HSV ranges for calibration
     initial_ranges = {
         'red': [([0, 100, 100], [10, 255, 255]), ([160, 100, 100], [180, 255, 255])],
         'blue': [([90, 50, 50], [130, 255, 255])],
@@ -232,8 +231,9 @@ def calibrate_color(picam2, color_ranges, color_name):
             roi = frame[roi_y_start:FRAME_HEIGHT, 0:FRAME_WIDTH]
         else:
             roi = frame
-            
-        cv2.putText(frame, f"Press 'c' to calibrate {color_name} line (q to skip)", (10, 30),
+        
+        # Display instructions on the camera feed
+        cv2.putText(frame, f"Calibrating {color_name} - Press 'c' to start, 'q' to skip", (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
         
         cv2.imshow("Calibration", frame)
@@ -243,9 +243,8 @@ def calibrate_color(picam2, color_ranges, color_name):
             print(f"Skipped calibration for {color_name}.")
             cv2.destroyWindow("Calibration")
             return False
-            
-        if key == ord('c'):
-            # Convert ROI to HSV
+        elif key == ord('c'):
+            # Convert ROI to HSV for calibration
             hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
             
             # Create a mask using initial broad range
@@ -266,7 +265,7 @@ def calibrate_color(picam2, color_ranges, color_name):
                     mask = np.zeros_like(color_mask)
                     cv2.drawContours(mask, [color_contour], -1, 255, -1)
                     
-                    # Record HSV values from pixels in the contour
+                    # Get HSV pixels from the contour
                     roi_pixels = hsv_roi[mask == 255]
                     if len(roi_pixels) > 0:
                         if color_name == 'red':
@@ -304,7 +303,7 @@ def calibrate_color(picam2, color_ranges, color_name):
                             color_ranges[color_name] = [([h_min, s_min, v_min], [h_max, s_max, v_max])]
                             print(f"{color_name.capitalize()} range: [{h_min}, {s_min}, {v_min}] to [{h_max}, {s_max}, {v_max}]")
                         
-                        # Show the calibrated mask for verification
+                        # Show the calibrated mask
                         calibrated_mask = np.zeros(hsv_roi.shape[:2], dtype=np.uint8)
                         for lower, upper in color_ranges[color_name]:
                             lower = np.array(lower, dtype=np.uint8)
