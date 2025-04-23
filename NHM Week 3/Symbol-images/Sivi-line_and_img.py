@@ -375,18 +375,21 @@ def detect_line(frame, color_priorities, color_ranges):
     return 0, False, None, []
 
 # Combined Image and Shape Detection with Line Following
-def detect_images_shapes_and_line(frame, prev_detections, reference_images, orb, color_priorities, color_ranges, right_pwm, left_pwm, max_len=5):
+def detect_images_shapes_and_line(frame, prev_detections, reference_images, orb, color_priorities, color_ranges, right_pwm, left_pwm, pause_state, max_len=5):
     match_name, orientation = match_image(frame, reference_images, orb)
     shape_detected = None
     if not match_name:
         shape_detected = detect_shapes(frame)
+    
     current_detection = match_name if match_name else shape_detected
     prev_detections.append(current_detection)
     if len(prev_detections) > max_len:
         prev_detections.popleft()
+    
     valid_detections = [d for d in prev_detections if d is not None]
     detected_name = None
     label = "Detected: None"
+    
     if valid_detections:
         detected_name = max(set(valid_detections), key=valid_detections.count)
         label = f"Detected: {detected_name}"
@@ -396,34 +399,64 @@ def detect_images_shapes_and_line(frame, prev_detections, reference_images, orb,
                            (int(tip[0]), int(tip[1])), (0, 255, 0), 2, tipLength=0.3)
             label += f" | Angle: {angle:.1f}°"
             print(f"Orientation Detected: {angle:.1f} degrees")
+    
     cv2.rectangle(frame, (5, 5), (400, 40), (0, 0, 0), -1)
     cv2.putText(frame, label, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-    print(f"Stabilized Detection Result: {detected_name if detected_name else 'None'}")
     
     # Line following logic
     error, line_found, detected_color, available_colors = detect_line(frame, color_priorities, color_ranges)
-    recovery_mode = False
-    if shape_detected or match_name:
+    
+    # Check if we need to enter pause state
+    if (shape_detected or match_name) and not pause_state['active']:
+        pause_state['active'] = True
+        pause_state['start_time'] = time.time()
+        pause_state['detected_object'] = detected_name
         stop_motors(right_pwm, left_pwm)
-        print(f"{'Shape' if shape_detected else 'Image'} detected: {detected_name}. Stopping for 5 seconds.")
-        time.sleep(5)
-        return frame, detected_name, error, line_found, detected_color, available_colors, True
-    if line_found:
-        recovery_mode = False
-        if error > TURN_THRESHOLD:
-            pivot_turn_right(right_pwm, left_pwm)
-            print(f"Pivot Turning Right - {detected_color} line")
-        elif error < -TURN_THRESHOLD:
-            pivot_turn_left(right_pwm, left_pwm)
-            print(f"Pivot Turning Left - {detected_color} line")
-        else:
+        print(f"{'Shape' if shape_detected else 'Image'} detected: {detected_name}. Pausing for 5 seconds.")
+        
+        # Display timer on frame
+        cv2.rectangle(frame, (5, 45), (400, 85), (0, 0, 0), -1)
+        cv2.putText(frame, "Paused: 5.0s remaining", (10, 75), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+        
+        return frame, detected_name, error, line_found, detected_color, available_colors, pause_state
+    
+    # Check if we're in pause state
+    if pause_state['active']:
+        elapsed = time.time() - pause_state['start_time']
+        remaining = max(5.0 - elapsed, 0)
+        
+        # Update display with timer
+        cv2.rectangle(frame, (5, 45), (400, 85), (0, 0, 0), -1)
+        cv2.putText(frame, f"Paused: {remaining:.1f}s remaining", (10, 75), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+        
+        # Check if pause time is over
+        if remaining <= 0:
+            pause_state['active'] = False
+            print(f"Resume line following after {pause_state['detected_object']} detection")
+            
+            # Add some forward movement to get past the image/shape
             move_forward(right_pwm, left_pwm)
-            print(f"Moving Forward - {detected_color} line (Available: {', '.join(available_colors)})")
-    else:
-        recovery_mode = True
-        move_backward(right_pwm, left_pwm, REVERSE_SPEED)
-        print("Reversing to find line...")
-    return frame, detected_name, error, line_found, detected_color, available_colors, False
+            # No sleep here to keep display responsive
+    
+    # Only do line following if not in pause state
+    if not pause_state['active']:
+        if line_found:
+            if error > TURN_THRESHOLD:
+                pivot_turn_right(right_pwm, left_pwm)
+                print(f"Pivot Turning Right - {detected_color} line")
+            elif error < -TURN_THRESHOLD:
+                pivot_turn_left(right_pwm, left_pwm)
+                print(f"Pivot Turning Left - {detected_color} line")
+            else:
+                move_forward(right_pwm, left_pwm)
+                print(f"Moving Forward - {detected_color} line (Available: {', '.join(available_colors)})")
+        else:
+            move_backward(right_pwm, left_pwm, REVERSE_SPEED)
+            print("Reversing to find line...")
+    
+    return frame, detected_name, error, line_found, detected_color, available_colors, pause_state
 
 # Main function
 def main():
@@ -431,6 +464,7 @@ def main():
     if picam2 is None:
         print("Exiting program. Camera could not be initialized.")
         return
+    
     right_pwm, left_pwm = setup_gpio()
     color_ranges = load_color_calibration()
     color_priorities = get_color_choices()
@@ -438,22 +472,34 @@ def main():
         print("Program terminated by user.")
         GPIO.cleanup()
         return
+    
     reference_images, orb = load_reference_images()
     prev_detections = deque()
+    
+    # Initialize pause state
+    pause_state = {'active': False, 'start_time': 0, 'detected_object': None}
+    
     print("Combined image/shape detection and line follower started. Press 'q' to stop.")
     try:
         while True:
             frame = picam2.capture_array()
+            
             if len(frame.shape) == 2:
                 frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
             elif frame.shape[2] == 4:
                 frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
-            output_frame, detected_name, error, line_found, detected_color, available_colors, stopped = detect_images_shapes_and_line(
-                frame, prev_detections, reference_images, orb, color_priorities, color_ranges, right_pwm, left_pwm)
+            
+            output_frame, detected_name, error, line_found, detected_color, available_colors, pause_state = detect_images_shapes_and_line(
+                frame, prev_detections, reference_images, orb, color_priorities, color_ranges, right_pwm, left_pwm, pause_state)
+            
             cv2.imshow("Combined Detection and Line Follower", output_frame)
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
                 break
+                
+            # Small sleep to prevent overwhelming the CPU
+            time.sleep(0.01)
+            
     except KeyboardInterrupt:
         print("\nProgram stopped by user")
     finally:
