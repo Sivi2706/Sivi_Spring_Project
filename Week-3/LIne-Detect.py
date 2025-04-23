@@ -147,6 +147,8 @@ def calibrate_black_line(picam2, color_ranges):
     
     while True:
         frame = picam2.capture_array()
+        # Convert RGB to BGR for correct color display
+        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
         
         if USE_ROI:
             bottom_roi_y_start = FRAME_HEIGHT - BOTTOM_ROI_HEIGHT
@@ -207,22 +209,24 @@ def calibrate_black_line(picam2, color_ranges):
     cv2.destroyWindow("Calibration")
 
 # Line detection function with top and bottom ROIs
-# Line detection function with top and bottom ROIs
 def detect_line(frame, color_priorities, color_ranges):
+    # Convert frame from RGB to BGR for correct color display
+    frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+    
     center_x = FRAME_WIDTH // 2
-    cv2.line(frame, (center_x, 0), (center_x, FRAME_HEIGHT), (0, 0, 255), 2)
+    cv2.line(frame_bgr, (center_x, 0), (center_x, FRAME_HEIGHT), (0, 0, 255), 2)
     
     # Bottom ROI for PID (30% from bottom)
     bottom_roi_y_start = FRAME_HEIGHT - BOTTOM_ROI_HEIGHT
-    bottom_roi = frame[bottom_roi_y_start:FRAME_HEIGHT, 0:FRAME_WIDTH]
+    bottom_roi = frame_bgr[bottom_roi_y_start:FRAME_HEIGHT, 0:FRAME_WIDTH]
     bottom_hsv = cv2.cvtColor(bottom_roi, cv2.COLOR_BGR2HSV)
-    cv2.rectangle(frame, (0, bottom_roi_y_start), (FRAME_WIDTH, FRAME_HEIGHT), (255, 255, 0), 2)
+    cv2.rectangle(frame_bgr, (0, bottom_roi_y_start), (FRAME_WIDTH, FRAME_HEIGHT), (255, 255, 0), 2)
     
     # Top ROI for line angle (70% from top)
     top_roi_y_end = TOP_ROI_HEIGHT
-    top_roi = frame[0:top_roi_y_end, 0:FRAME_WIDTH]
+    top_roi = frame_bgr[0:top_roi_y_end, 0:FRAME_WIDTH]
     top_hsv = cv2.cvtColor(top_roi, cv2.COLOR_BGR2HSV)
-    cv2.rectangle(frame, (0, 0), (FRAME_WIDTH, top_roi_y_end), (0, 255, 255), 2)
+    cv2.rectangle(frame_bgr, (0, 0), (FRAME_WIDTH, top_roi_y_end), (0, 255, 255), 2)
     
     bottom_best_contour = None
     bottom_best_color = None
@@ -300,10 +304,10 @@ def detect_line(frame, color_priorities, color_ranges):
             bottom_best_cy = cy + bottom_roi_y_start
             
             contour_color = (0, 255, 0) if bottom_best_color != 'black' else (128, 128, 128)
-            cv2.drawContours(frame[bottom_roi_y_start:FRAME_HEIGHT, 0:FRAME_WIDTH], 
+            cv2.drawContours(frame_bgr[bottom_roi_y_start:FRAME_HEIGHT, 0:FRAME_WIDTH], 
                             [bottom_best_contour], -1, contour_color, 2)
-            cv2.circle(frame, (bottom_best_cx, bottom_best_cy), 5, (255, 0, 0), -1)
-            cv2.line(frame, (center_x, bottom_best_cy), (bottom_best_cx, bottom_best_cy), (255, 0, 0), 2)
+            cv2.circle(frame_bgr, (bottom_best_cx, bottom_best_cy), 5, (255, 0, 0), -1)
+            cv2.line(frame_bgr, (center_x, bottom_best_cy), (bottom_best_cx, bottom_best_cy), (255, 0, 0), 2)
             
             error = bottom_best_cx - center_x
             line_found = True
@@ -322,13 +326,13 @@ def detect_line(frame, color_priorities, color_ranges):
         line_angle = line_angle.item() % 180  # Extract scalar and normalize to 0-180 degrees
         
         contour_color = (0, 255, 0) if top_best_color != 'black' else (128, 128, 128)
-        cv2.drawContours(frame[0:top_roi_y_end, 0:FRAME_WIDTH], 
+        cv2.drawContours(frame_bgr[0:top_roi_y_end, 0:FRAME_WIDTH], 
                         [top_best_contour], -1, contour_color, 2)
         
         # Draw fitted line
         left_y = int(y0 - (x0 * vy / vx))
         right_y = int(y0 + ((FRAME_WIDTH - x0) * vy / vx))
-        cv2.line(frame, (0, left_y), (FRAME_WIDTH, right_y), (0, 0, 255), 2)
+        cv2.line(frame_bgr, (0, left_y), (FRAME_WIDTH, right_y), (0, 0, 255), 2)
         
         metadata['top_color'] = top_best_color
         metadata['line_angle'] = round(line_angle, 2)  # Now safe to round
@@ -336,16 +340,15 @@ def detect_line(frame, color_priorities, color_ranges):
     # Display metadata
     y_offset = 30
     for key, value in metadata.items():
-        cv2.putText(frame, f"{key}: {value}", (10, y_offset),
+        cv2.putText(frame_bgr, f"{key}: {value}", (10, y_offset),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         y_offset += 30
     
     available_colors_text = "Available: " + ", ".join(all_available_colors)
-    cv2.putText(frame, available_colors_text, (10, y_offset), 
+    cv2.putText(frame_bgr, available_colors_text, (10, y_offset), 
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
     
-    return error, line_found, bottom_best_color, all_available_colors
-
+    return error, line_found, bottom_best_color, all_available_colors, frame_bgr
 
 # Main function
 def main():
@@ -366,9 +369,9 @@ def main():
     try:
         while True:
             frame = picam2.capture_array()
-            error, line_found, detected_color, available_colors = detect_line(frame, color_priorities, color_ranges)
+            error, line_found, detected_color, available_colors, output_frame = detect_line(frame, color_priorities, color_ranges)
             
-            cv2.imshow("Line Follower", frame)
+            cv2.imshow("Line Follower", output_frame)
             key = cv2.waitKey(1) & 0xFF
             
             if key == ord('q'):
@@ -386,6 +389,7 @@ def main():
     finally:
         cv2.destroyAllWindows()
         GPIO.cleanup()
+        picam2.stop()
         print("Resources released")
         
 if __name__ == "__main__":
