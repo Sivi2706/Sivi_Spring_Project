@@ -236,6 +236,7 @@ def stop_motors(right_pwm, left_pwm):
     print("Stopped")
 
 # Function to calibrate a specific color and record HSV values
+# Function to calibrate a specific color and record HSV values
 def calibrate_color(picam2, color_ranges, color_name):
     print(f"\nCalibrating {color_name} line detection...")
     print(f"Place the camera to view the {color_name} line and press 'c' to capture and calibrate.")
@@ -249,6 +250,10 @@ def calibrate_color(picam2, color_ranges, color_name):
         'yellow': [([20, 100, 100], [40, 255, 255])],
         'black': [([0, 0, 0], [180, 100, 80])]
     }
+    
+    # Expected blue hue range for validation
+    EXPECTED_BLUE_HUE_MIN = 90
+    EXPECTED_BLUE_HUE_MAX = 130
     
     while True:
         frame = picam2.capture_array()
@@ -324,13 +329,30 @@ def calibrate_color(picam2, color_ranges, color_name):
                                 print(f"Upper red range: [{h_min_u}, {s_min_u}, {v_min_u}] to [{h_max_u}, {s_max_u}, {v_max_u}]")
                         else:
                             # Single range for other colors
-                            h_min = max(0, np.min(roi_pixels[:, 0]) - 10)
-                            h_max = min(179, np.max(roi_pixels[:, 0]) + 10)
-                            s_min = max(0, np.min(roi_pixels[:, 1]) - 20)
-                            s_max = min(255, np.max(roi_pixels[:, 1]) + 20)
-                            v_min = max(0, np.min(roi_pixels[:, 2]) - 20)
-                            v_max = min(255, np.max(roi_pixels[:, 2]) + 20)
-                            color_ranges[color_name] = [([h_min, s_min, v_min], [h_max, s_max, v_max])]
+                            # Calculate median HSV for debugging
+                            median_h = int(np.median(roi_pixels[:, 0]))
+                            median_s = int(np.median(roi_pixels[:, 1]))
+                            median_v = int(np.median(roi_pixels[:, 2]))
+                            print(f"Median HSV for {color_name}: [{median_h}, {median_s}, {median_v}]")
+                            
+                            # Use tighter margins for blue
+                            h_margin = 5 if color_name == 'blue' else 10
+                            s_v_margin = 15 if color_name == 'blue' else 20
+                            
+                            h_min = max(0, np.min(roi_pixels[:, 0]) - h_margin)
+                            h_max = min(179, np.max(roi_pixels[:, 0]) + h_margin)
+                            s_min = max(0, np.min(roi_pixels[:, 1]) - s_v_margin)
+                            s_max = min(255, np.max(roi_pixels[:, 1]) + s_v_margin)
+                            v_min = max(0, np.min(roi_pixels[:, 2]) - s_v_margin)
+                            v_max = min(255, np.max(roi_pixels[:, 2]) + s_v_margin)
+                            
+                            # For blue, validate hue range
+                            if color_name == 'blue' and (median_h < EXPECTED_BLUE_HUE_MIN or median_h > EXPECTED_BLUE_HUE_MAX):
+                                print(f"Warning: Median hue ({median_h}) outside expected blue range ({EXPECTED_BLUE_HUE_MIN}-{EXPECTED_BLUE_HUE_MAX}). Using default range.")
+                                color_ranges[color_name] = default_color_ranges[color_name]
+                            else:
+                                color_ranges[color_name] = [([h_min, s_min, v_min], [h_max, s_max, v_max])]
+                            
                             print(f"{color_name.capitalize()} range: [{h_min}, {s_min}, {v_min}] to [{h_max}, {s_max}, {v_max}]")
                         
                         # Show the calibrated mask for verification
