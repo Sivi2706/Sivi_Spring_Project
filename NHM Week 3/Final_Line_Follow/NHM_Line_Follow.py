@@ -10,7 +10,6 @@ from picamera2 import Picamera2
 IN1, IN2 = 22, 27         # Left motor control
 IN3, IN4 = 17, 4          # Right motor control
 ENA, ENB = 13, 12         # PWM pins for motors
-SERVO_PIN = 18            # Servo motor pin
 encoderPinRight = 23      # Right encoder
 encoderPinLeft = 24       # Left encoder
 
@@ -38,8 +37,6 @@ ROI_HEIGHT = 150           # Height of the ROI from the bottom of the frame
 
 # PWM settings
 PWM_FREQ = 1000           # Motor PWM frequency
-SERVO_FREQ = 50           # Servo PWM frequency
-SERVO_NEUTRAL = 7.5       # Neutral position (90 degrees, 7.5% duty cycle)
 
 # Variables to store encoder counts
 right_counter = 0
@@ -171,7 +168,7 @@ def setup_gpio():
     GPIO.setwarnings(False)
 
     # Setup motor and encoder pins
-    GPIO.setup([IN1, IN2, IN3, IN4, ENA, ENB, SERVO_PIN], GPIO.OUT)
+    GPIO.setup([IN1, IN2, IN3, IN4, ENA, ENB], GPIO.OUT)
     GPIO.setup(encoderPinRight, GPIO.IN, pull_up_down=GPIO.PUD_UP)
     GPIO.setup(encoderPinLeft, GPIO.IN, pull_up_down=GPIO.PUD_UP)
     
@@ -185,11 +182,7 @@ def setup_gpio():
     left_pwm.start(0)
     right_pwm.start(0)
 
-    # Setup servo PWM
-    servo_pwm = GPIO.PWM(SERVO_PIN, SERVO_FREQ)
-    servo_pwm.start(SERVO_NEUTRAL)  # Start at neutral
-
-    return left_pwm, right_pwm, servo_pwm
+    return left_pwm, right_pwm
 
 # Motor control functions
 def turn_right(left_pwm, right_pwm):
@@ -228,14 +221,13 @@ def move_backward(left_pwm, right_pwm):
     right_pwm.ChangeDutyCycle(REVERSE_SPEED)
     print("Moving Backward")
 
-def stop_motors(left_pwm, right_pwm, servo_pwm):
+def stop_motors(left_pwm, right_pwm):
     left_pwm.ChangeDutyCycle(0)
     right_pwm.ChangeDutyCycle(0)
     GPIO.output(IN1, GPIO.LOW)
     GPIO.output(IN2, GPIO.LOW)
     GPIO.output(IN3, GPIO.LOW)
     GPIO.output(IN4, GPIO.LOW)
-    servo_pwm.ChangeDutyCycle(SERVO_NEUTRAL)
     print("Stopped")
 
 # Function to calibrate a specific color and record HSV values
@@ -265,6 +257,17 @@ def calibrate_color(picam2, color_ranges, color_name):
         else:
             roi = frame
             
+        # Convert ROI to HSV to get center pixel value
+        hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        # Calculate center of ROI
+        center_x = FRAME_WIDTH // 2
+        center_y = ROI_HEIGHT // 2 if USE_ROI else FRAME_HEIGHT // 2
+        # Get HSV value at center
+        h, s, v = hsv_roi[center_y, center_x]
+        
+        # Display HSV value at center of ROI
+        cv2.putText(frame, f"Center HSV: ({h}, {s}, {v})", (10, 60),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
         cv2.putText(frame, f"Press 'c' to calibrate {color_name} line", (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
         
@@ -277,9 +280,6 @@ def calibrate_color(picam2, color_ranges, color_name):
             return False
             
         if key == ord('c'):
-            # Convert ROI to HSV
-            hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-            
             # Create a mask using initial broad range
             color_mask = np.zeros(hsv_roi.shape[:2], dtype=np.uint8)
             for lower, upper in initial_ranges[color_name]:
@@ -461,7 +461,7 @@ def detect_line(frame, color_priorities, color_ranges):
 
 # Main function
 def main():
-    left_pwm, right_pwm, servo_pwm = setup_gpio()
+    left_pwm, right_pwm = setup_gpio()
     picam2 = initialize_camera()
     if picam2 is None:
         print("Exiting program. Camera could not be initialized.")
@@ -533,14 +533,13 @@ def main():
     except KeyboardInterrupt:
         print("\nProgram stopped by user")
     finally:
-        stop_motors(left_pwm, right_pwm, servo_pwm)
+        stop_motors(left_pwm, right_pwm)
         left_pwm.stop()
         right_pwm.stop()
-        servo_pwm.stop()
         cv2.destroyAllWindows()
         picam2.stop()
         GPIO.cleanup()
         print("Resources released")
         
-if _name_ == "_main_":
+if __name__ == "__main__":
     main()
