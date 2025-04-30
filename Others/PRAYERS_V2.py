@@ -5,8 +5,8 @@ from picamera2 import Picamera2
 
 class SymbolRecognizer:
     def __init__(self, script_dir):
-        # Set the directory to Img recg, located as a sibling to the script's directory
-        self.symbol_dir = os.path.join(os.path.dirname(script_dir), "Img recg")
+        # Set the directory to Img recg, located in the Week-3 subdirectory
+        self.symbol_dir = os.path.join(os.path.dirname(script_dir), "Week-3", "Img recg")
         # Dictionary: symbol_name -> (color_template (RGB), gray_template, contour)
         self.symbol_templates = {}
         self.calibrate()
@@ -71,9 +71,6 @@ class SymbolRecognizer:
                 print(f"Error matching template {name}: {e}")
 
         return (best_match, best_score) if best_score < 0.2 else (None, float('inf'))
-
-# [Rest of the code remains exactly the same...]
-# Only the SymbolRecognizer class initialization was modified to point to Img recg folder
 
 def process_reference_image(template_color_rgb):
     """Process reference image in RGB and return BGR for display"""
