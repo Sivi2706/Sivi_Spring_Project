@@ -36,7 +36,7 @@ REVERSE_SPEED = 40        # Speed when reversing
 # ROI parameters
 USE_ROI = True            # Enable ROI for line detection
 ROI_HEIGHT = 150          # Height of the ROI from the bottom
-SYMBOL_ROI_HEIGHT = 330   # Height for symbol detection (upper frame)
+SYMBOL_ROI_HEIGHT = 400   # Increased for better symbol detection (upper frame)
 
 # PWM settings
 PWM_FREQ = 1000           # Motor PWM frequency
@@ -70,11 +70,14 @@ default_color_ranges = {
     ]
 }
 
-# Initialize Raspberry Pi Camera
+# Initialize Raspberry Pi Camera with exposure settings
 def initialize_camera():
     try:
         picam2 = Picamera2()
-        picam2.configure(picam2.create_preview_configuration(main={"size": (FRAME_WIDTH, FRAME_HEIGHT)}))
+        config = picam2.create_preview_configuration(main={"size": (FRAME_WIDTH, FRAME_HEIGHT)})
+        config["controls"]["ExposureTime"] = 20000  # Adjust exposure (in microseconds)
+        config["controls"]["AnalogueGain"] = 2.0  # Increase gain for better brightness
+        picam2.configure(config)
         picam2.start()
         time.sleep(2)
         return picam2
@@ -188,8 +191,8 @@ def setup_gpio():
 def turn_right(left_pwm, right_pwm):
     GPIO.output(IN1, GPIO.HIGH)
     GPIO.output(IN2, GPIO.LOW)
-    GPIO.output(IN3, GPIO.LOW)
-    GPIO.output(IN4, GPIO.HIGH)
+    GPIO.output(IN3, GPIO.HIGH)
+    GPIO.output(IN4, GPIO.LOW)
     left_pwm.ChangeDutyCycle(TURN_SPEED)
     right_pwm.ChangeDutyCycle(TURN_SPEED)
     print("Turning Right")
@@ -197,8 +200,8 @@ def turn_right(left_pwm, right_pwm):
 def turn_left(left_pwm, right_pwm):
     GPIO.output(IN1, GPIO.LOW)
     GPIO.output(IN2, GPIO.HIGH)
-    GPIO.output(IN3, GPIO.HIGH)
-    GPIO.output(IN4, GPIO.LOW)
+    GPIO.output(IN3, GPIO.LOW)
+    GPIO.output(IN4, GPIO.HIGH)
     left_pwm.ChangeDutyCycle(TURN_SPEED)
     right_pwm.ChangeDutyCycle(TURN_SPEED)
     print("Turning Left")
@@ -206,8 +209,8 @@ def turn_left(left_pwm, right_pwm):
 def move_forward(left_pwm, right_pwm):
     GPIO.output(IN1, GPIO.HIGH)
     GPIO.output(IN2, GPIO.LOW)
-    GPIO.output(IN3, GPIO.HIGH)
-    GPIO.output(IN4, GPIO.LOW)
+    GPIO.output(IN3, GPIO.LOW)
+    GPIO.output(IN4, GPIO.HIGH)
     left_pwm.ChangeDutyCycle(BASE_SPEED)
     right_pwm.ChangeDutyCycle(BASE_SPEED)
     print("Moving Forward")
@@ -215,8 +218,8 @@ def move_forward(left_pwm, right_pwm):
 def move_backward(left_pwm, right_pwm):
     GPIO.output(IN1, GPIO.LOW)
     GPIO.output(IN2, GPIO.HIGH)
-    GPIO.output(IN3, GPIO.LOW)
-    GPIO.output(IN4, GPIO.HIGH)
+    GPIO.output(IN3, GPIO.HIGH)
+    GPIO.output(IN4, GPIO.LOW)
     left_pwm.ChangeDutyCycle(REVERSE_SPEED)
     right_pwm.ChangeDutyCycle(REVERSE_SPEED)
     print("Moving Backward")
@@ -259,40 +262,56 @@ def match_image(frame, reference_images, orb):
         matches = bf.knnMatch(descriptors, ref_descriptors, k=2)
         good_matches = [m for m, n in matches if m.distance < 0.75 * n.distance]  # Lowe's ratio test
         matches_dict[name] = len(good_matches)
-        if len(good_matches) > 50:  # Increased threshold
+        if len(good_matches) > 50:
             best_match = name
     for name, count in sorted(matches_dict.items(), key=lambda x: x[1], reverse=True):
         print(f"{name}: {count} matches")
     return best_match
 
-
-# Symbol Detection Functions
-def detect_shapes(frame):
+def detect_shapes(frame, color_ranges):
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    
+    # Color-based segmentation for blue arrow
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    blue_mask = np.zeros_like(gray)
+    for lower, upper in color_ranges['blue']:
+        lower = np.array(lower, dtype=np.uint8)
+        upper = np.array(upper, dtype=np.uint8)
+        blue_mask = cv2.bitwise_or(blue_mask, cv2.inRange(hsv, lower, upper))
+    
+    # Preprocessing with adjusted parameters
+    blurred = cv2.GaussianBlur(blue_mask, (7, 7), 0)  # Increased kernel size
     _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    edges = cv2.Canny(thresh, 30, 200)
+    edges = cv2.Canny(thresh, 20, 150)  # Adjusted thresholds for better edge detection
     kernel = np.ones((3, 3), np.uint8)
     edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+    
+    # Debug intermediate steps
+    cv2.imshow("Edges", edges)
+    cv2.imshow("Threshold", thresh)
+    
     contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     shape_detected = None
     symbol_mask = np.zeros_like(gray)
-    shape_outline_mask = np.zeros_like(gray)  # Binary mask for shape outline
+    shape_outline_mask = np.zeros_like(gray)
     
     for contour in contours:
-        if cv2.contourArea(contour) < 1000:
+        area = cv2.contourArea(contour)
+        if area < 500:  # Lowered threshold
             continue
         epsilon = 0.01 * cv2.arcLength(contour, True)
         approx = cv2.approxPolyDP(contour, epsilon, True)
         x, y, w, h = cv2.boundingRect(approx)
-        area = cv2.contourArea(contour)
         perimeter = cv2.arcLength(contour, True)
         circularity = 4 * np.pi * area / (perimeter * perimeter) if perimeter > 0 else 0
         sides = len(approx)
         
+        # Debug contour information
+        print(f"Contour area: {area}, Circularity: {circularity}, Sides: {sides}")
+        
         # Detect enclosing shape (circle or rectangle)
         enclosing_shape = None
-        if circularity > 0.8:
+        if circularity > 0.6:  # Lowered threshold
             enclosing_shape = "Circle"
         elif sides == 4:
             aspect_ratio = float(w) / h
@@ -302,7 +321,7 @@ def detect_shapes(frame):
                 enclosing_shape = "Rectangle"
         
         # Arrow detection with direction
-        if 5 <= sides <= 8:  # Potential arrow
+        if 4 <= sides <= 10:  # Wider range for arrow-like shapes
             try:
                 hull = cv2.convexHull(contour, returnPoints=False)
                 if hull is not None and len(hull) > 3 and len(contour) > 3:
@@ -310,18 +329,15 @@ def detect_shapes(frame):
                     if defects is not None and len(defects) > 0:
                         max_defect = np.max(defects[:, 0, 3])
                         if max_defect > 300:
-                            # Find arrow tip (farthest defect point)
                             defect_idx = np.argmax(defects[:, 0, 3])
                             start_idx = defects[defect_idx, 0, 0]
                             end_idx = defects[defect_idx, 0, 1]
                             far_idx = defects[defect_idx, 0, 2]
                             far_point = tuple(contour[far_idx][0])
-                            # Compute centroid
                             M = cv2.moments(contour)
                             if M["m00"] != 0:
                                 cx = int(M["m10"] / M["m00"])
                                 cy = int(M["m01"] / M["m00"])
-                                # Determine direction
                                 dx = far_point[0] - cx
                                 dy = far_point[1] - cy
                                 angle = np.arctan2(dy, dx) * 180 / np.pi
@@ -340,31 +356,31 @@ def detect_shapes(frame):
                                     elif 135 <= angle <= 225:
                                         shape_detected = "Left"
                             cv2.drawContours(frame, [approx], -1, (0, 255, 0), 2)
-                            cv2.drawContours(shape_outline_mask, [approx], -1, 255, 2)  # Draw outline on binary mask
+                            cv2.drawContours(symbol_mask, [approx], -1, 255, -1)  # Filled mask
+                            cv2.drawContours(shape_outline_mask, [approx], -1, 255, 2)  # Outline mask
                             cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 0, 0), 2)
                             cv2.putText(frame, shape_detected, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-                            cv2.drawContours(symbol_mask, [approx], -1, 255, -1)
                             break
             except cv2.error as e:
                 print(f"Convexity defect calculation skipped: {e}")
     
     return shape_detected, symbol_mask, shape_outline_mask
-def detect_images(frame, prev_detections, reference_images, orb, max_len=10):
+
+def detect_images(frame, prev_detections, reference_images, orb, color_ranges, max_len=20):
     if reference_images:
         match_name = match_image(frame, reference_images, orb)
     else:
         match_name = None
     shape_detected, symbol_mask, shape_outline_mask = None, np.zeros_like(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)), np.zeros_like(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
     if not match_name:
-        # Updated to handle three return values from detect_shapes
-        shape_detected, symbol_mask, shape_outline_mask = detect_shapes(frame)
+        shape_detected, symbol_mask, shape_outline_mask = detect_shapes(frame, color_ranges)
     current_detection = match_name if match_name else shape_detected
     prev_detections.append(current_detection)
     if len(prev_detections) > max_len:
         prev_detections.popleft()
     valid_detections = [d for d in prev_detections if d is not None]
     detected_name = None
-    if valid_detections and valid_detections.count(valid_detections[0]) >= 3:
+    if valid_detections and valid_detections.count(valid_detections[0]) >= 2:  # Lowered threshold
         detected_name = max(set(valid_detections), key=valid_detections.count)
         label = f"Symbol: {detected_name}"
     else:
@@ -372,7 +388,6 @@ def detect_images(frame, prev_detections, reference_images, orb, max_len=10):
     cv2.rectangle(frame, (5, 120), (250, 150), (0, 0, 0), -1)
     cv2.putText(frame, label, (10, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
     return frame, detected_name, symbol_mask, shape_outline_mask
-
 
 # Announce Symbol
 def announce_symbol(symbol, last_announced, announce_interval=2.0):
@@ -392,7 +407,7 @@ def calibrate_color(picam2, color_ranges, color_name):
     
     initial_ranges = {
         'red': [([0, 100, 100], [10, 255, 255]), ([160, 100, 100], [180, 255, 255])],
-        'blue': [([100, 120, 50], [130, 255, 150])],  # Adjusted for blue
+        'blue': [([100, 120, 50], [130, 255, 150])],
         'green': [([35, 100, 50], [85, 255, 255])],
         'yellow': [([20, 100, 100], [40, 255, 255])],
         'black': [([0, 0, 0], [180, 100, 80])]
@@ -415,7 +430,6 @@ def calibrate_color(picam2, color_ranges, color_name):
         cv2.putText(frame, f"Press 'c' to calibrate {color_name} line", (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
         
-        # Show initial mask for debugging
         hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
         color_mask = np.zeros(hsv_roi.shape[:2], dtype=np.uint8)
         for lower, upper in initial_ranges[color_name]:
@@ -451,7 +465,7 @@ def calibrate_color(picam2, color_ranges, color_name):
             else:
                 print(f"No {color_name} line detected. Try again.")
                 
-            if frame_count >= 3:  # Average 3 samples
+            if frame_count >= 3:
                 if hsv_samples:
                     all_pixels = np.concatenate(hsv_samples, axis=0)
                     if color_name == 'red':
@@ -535,9 +549,9 @@ def detect_line(frame, color_priorities, color_ranges):
             upper = np.array(upper, dtype=np.uint8)
             color_mask = cv2.bitwise_or(color_mask, cv2.inRange(hsv, lower, upper))
         
-        kernel = np.ones((3, 3), np.uint8)  # Smaller kernel
+        kernel = np.ones((3, 3), np.uint8)
         color_mask = cv2.morphologyEx(color_mask, cv2.MORPH_CLOSE, kernel)
-        if color_name == color_priorities[0]:  # Show mask for highest priority
+        if color_name == color_priorities[0]:
             debug_mask = color_mask
         
         contours, _ = cv2.findContours(color_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -602,6 +616,7 @@ def detect_line(frame, color_priorities, color_ranges):
 
     return 0, False, None, [], debug_mask
 
+# Main function
 def main():
     left_pwm, right_pwm, servo_pwm = setup_gpio()
     picam2 = initialize_camera()
@@ -636,7 +651,7 @@ def main():
     prev_detections = deque()
     last_announced = [None, 0.0]
     frame_count = 0
-    symbol_skip = 5
+    symbol_skip = 1  # Reduced to check every frame
     
     try:
         while True:
@@ -646,7 +661,7 @@ def main():
             
             if frame_count % symbol_skip == 0:
                 symbol_roi = frame[0:SYMBOL_ROI_HEIGHT, 0:FRAME_WIDTH]
-                output_frame, detected_symbol, symbol_mask, shape_outline_mask = detect_images(symbol_roi, prev_detections, reference_images, orb)
+                output_frame, detected_symbol, symbol_mask, shape_outline_mask = detect_images(symbol_roi, prev_detections, reference_images, orb, color_ranges)
                 frame[0:SYMBOL_ROI_HEIGHT, 0:FRAME_WIDTH] = output_frame
                 last_announced = announce_symbol(detected_symbol, last_announced)
             else:
