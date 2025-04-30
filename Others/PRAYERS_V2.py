@@ -4,9 +4,9 @@ import os
 from picamera2 import Picamera2
 
 class SymbolRecognizer:
-    def __init__(self, symbol_dir):
-        # Change to read from raspi-img folder instead
-        self.symbol_dir = os.path.join(os.path.dirname(symbol_dir), "raspi-img")
+    def __init__(self, script_dir):
+        # Set the directory to Img recg, located as a sibling to the script's directory
+        self.symbol_dir = os.path.join(os.path.dirname(script_dir), "Img recg")
         # Dictionary: symbol_name -> (color_template (RGB), gray_template, contour)
         self.symbol_templates = {}
         self.calibrate()
@@ -15,10 +15,10 @@ class SymbolRecognizer:
         print("Starting Calibration Stage...")
         print(f"Loading templates from: {self.symbol_dir}")
 
-        # Check if raspi-img directory exists
+        # Check if Img recg directory exists
         if not os.path.exists(self.symbol_dir):
             print(f"Error: Directory not found - {self.symbol_dir}")
-            print("Please create a 'raspi-img' folder with symbol subfolders")
+            print("Please create an 'Img recg' folder with symbol subfolders")
             exit()
 
         for subfolder in os.listdir(self.symbol_dir):
@@ -47,9 +47,9 @@ class SymbolRecognizer:
                             print(f"Loaded template: {symbol_name}")
 
         if not self.symbol_templates:
-            print("No templates found in raspi-img folder. Exiting.")
+            print("No templates found in Img recg folder. Exiting.")
             exit()
-        print(f"Loaded {len(self.symbol_templates)} templates from raspi-img folder.")
+        print(f"Loaded {len(self.symbol_templates)} templates from Img recg folder.")
         input("Press Enter to continue...")
 
     def match_symbol(self, roi_gray):
@@ -73,7 +73,7 @@ class SymbolRecognizer:
         return (best_match, best_score) if best_score < 0.2 else (None, float('inf'))
 
 # [Rest of the code remains exactly the same...]
-# Only the SymbolRecognizer class initialization was modified to point to raspi-img folder
+# Only the SymbolRecognizer class initialization was modified to point to Img recg folder
 
 def process_reference_image(template_color_rgb):
     """Process reference image in RGB and return BGR for display"""
@@ -139,9 +139,9 @@ def detect_shapes_and_symbols(frame, symbol_recognizer):
     return frame, best_frame_symbol
 
 def main():
-    # Original symbol directory path (though we'll use raspi-img instead)
-    symbol_dir = '/home/raspberry/Documents/S1V1/Sivi_Spring_Project/Symbol-images'
-    symbol_recognizer = SymbolRecognizer(symbol_dir)
+    # Pass the script's directory to SymbolRecognizer
+    script_dir = os.path.abspath(__file__)
+    symbol_recognizer = SymbolRecognizer(script_dir)
     picam2 = initialize_camera()
 
     if picam2 is None:
