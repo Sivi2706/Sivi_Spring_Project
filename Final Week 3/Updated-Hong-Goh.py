@@ -7,6 +7,8 @@ import os
 from picamera2 import Picamera2
 import math
 import glob
+from collections import deque
+from sklearn import svm
 
 # Define GPIO pins
 IN1, IN2 = 22, 27         # Left motor control
@@ -560,65 +562,171 @@ def detect_shape(cnt, frame, hsv_frame):
 
     return shape, None
 
-# Load template images
+# Load and preprocess reference images with ORB features
 def load_templates():
-    templates = []
-    template_names = []
+    reference_images = {}
+    orb = cv2.ORB_create(nfeatures=1000)  # Increased features for better matching
     for ext in TEMPLATE_EXTENSIONS:
         template_paths = glob.glob(os.path.join(TEMPLATE_DIR, ext))
         for path in template_paths:
-            template = cv2.imread(path)
-            if template is not None:
-                templates.append(template)
-                template_names.append(os.path.basename(path))
-    return templates, template_names
+            img = cv2.imread(path, 0)  # Load as grayscale
+            if img is None:
+                print(f"Error: Could not load {path}. Skipping.")
+                continue
+            img = cv2.resize(img, (FRAME_WIDTH, FRAME_HEIGHT), interpolation=cv2.INTER_AREA)
+            keypoints, descriptors = orb.detectAndCompute(img, None)
+            if descriptors is not None:
+                filename = os.path.basename(path)
+                reference_images[filename] = (keypoints, descriptors, img)
+            else:
+                print(f"Warning: No features detected in {path}")
+    return reference_images, orb
 
-# Template matching function
-def perform_template_matching(frame, templates, template_names):
-    if not templates:
-        return frame, "No Templates", 0.0
-    
-    gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    best_match_score = -float('inf')
-    best_match_frame = frame.copy()
-    best_template_name = "None"
-    best_template = None
-    
-    for template, name in zip(templates, template_names):
-        gray_template = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
-        
-        # Skip if template is larger than frame
-        if gray_template.shape[0] > gray_frame.shape[0] or gray_template.shape[1] > gray_frame.shape[1]:
-            continue
-        
-        # Perform template matching
-        result = cv2.matchTemplate(gray_frame, gray_template, cv2.TM_CCOEFF_NORMED)
-        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
-        
-        if max_val > best_match_score:
-            best_match_score = max_val
-            best_template_name = name
-            best_template = template
-            
-            # Draw rectangle around the matched area
-            w, h = gray_template.shape[::-1]
-            top_left = max_loc
-            bottom_right = (top_left[0] + w, top_left[1] + h)
-            best_match_frame = frame.copy()
-            cv2.rectangle(best_match_frame, top_left, bottom_right, (0, 255, 0), 2)
-            cv2.putText(best_match_frame, f"Match: {name} ({max_val:.2f})", (top_left[0], top_left[1] - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-    
-    # Create a combined image with template and matched result
-    if best_template is not None:
-        w, h = best_template.shape[1], best_template.shape[0]
-        template_display = cv2.resize(best_template, (w, h))
-        combined = np.zeros((max(h, FRAME_HEIGHT), w + FRAME_WIDTH, 3), dtype=np.uint8)
-        combined[:h, :w] = template_display
-        combined[:FRAME_HEIGHT, w:w+FRAME_WIDTH] = best_match_frame
-        return combined, best_template_name, best_match_score
-    
-    return frame, "No Match", 0.0
+# Train SVM classifier with directional features
+def train_svm_classifier():
+    # Training data with red ratio, verticality, horizontality
+    features = np.array([
+        [0.1, 0.9, 0.0],  # Upward arrow: low red, high verticality
+        [0.1, 0.9, 0.0],  # Upward arrow
+        [0.1, 0.2, 1.0],  # Leftward arrow: low red, high horizontality
+        [0.1, 0.2, 1.0],  # Leftward arrow
+        [0.8, 0.3, 0.2],  # Stop sign: high red, moderate features
+        [0.7, 0.2, 0.3]   # Stop sign
+    ])
+    labels = np.array([0, 0, 1, 1, 2, 2])  # 0: up arrow, 1: left arrow, 2: stop sign
+    clf = svm.SVC(kernel='linear', probability=True)
+    clf.fit(features, labels)
+    return clf
+
+# Validate stop sign characteristics
+def validate_stop_sign(image, keypoints):
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    lower_red = np.array([0, 120, 70])
+    upper_red = np.array([10, 255, 255])
+    mask = cv2.inRange(hsv, lower_red, upper_red)
+    red_ratio = np.sum(mask) / (mask.size * 255)
+    confidence = 0.5 if red_ratio > 0.2 else 0.3
+    return confidence
+
+# Validate arrow orientation using PCA
+def validate_orientation(frame):
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if contours:
+        cnt = max(contours, key=cv2.contourArea)
+        if len(cnt) >= 5:
+            _, (eigen_vecs, _) = cv2.PCACompute2(cnt.reshape(-1, 2), np.array([]))
+            angle = np.arctan2(eigen_vecs[0, 1], eigen_vecs[0, 0]) * 180 / np.pi
+            if abs(angle) < 45 or abs(angle - 180) < 45:
+                return "up", angle
+            elif abs(angle - 90) < 45 or abs(angle - 270) < 45:
+                return "left" if angle > 0 else "right", angle
+    return None, 0.0
+
+# Enhanced ORB feature matching with orientation validation
+def perform_template_matching(frame, orb, reference_images, svm_clf, prev_detections, max_len=5):
+    frame_rgb = frame.copy()
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (5, 5), 0)
+    frame_keypoints, descriptors = orb.detectAndCompute(gray, None)
+    if descriptors is None:
+        print("No descriptors detected in frame.")
+        return gray, "None", 0.0, None, None, None, frame_keypoints, None
+
+    matches_dict = {}
+    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+    best_match = None
+    best_matches = None
+    best_ref_keypoints = None
+    supposed_match = None
+    supposed_match_count = 0
+    supposed_matches_list = []
+    supposed_keypoints = None
+    match_threshold = 20  # Stricter matching threshold
+
+    for name, (ref_keypoints, ref_descriptors, ref_img) in reference_images.items():
+        matches = bf.match(descriptors, ref_descriptors)
+        matches_dict[name] = len(matches)
+        if len(matches) > supposed_match_count:
+            supposed_match = name
+            supposed_match_count = len(matches)
+            supposed_matches_list = matches
+            supposed_keypoints = ref_keypoints
+        if len(matches) > match_threshold:
+            matches = sorted(matches, key=lambda x: x.distance)
+            if not best_match or len(matches) > matches_dict[best_match]:
+                best_match = name
+                best_matches = matches[:10]
+                best_ref_keypoints = ref_keypoints
+
+    confidence = 0.0
+    direction = None
+    detected_angle = 0.0
+    if supposed_match:
+        # Directional validation for arrows
+        if "arrow" in supposed_match.lower():
+            direction, detected_angle = validate_orientation(frame_rgb)
+            ref_direction = "left" if "left" in supposed_match.lower() else "up" if "up" in supposed_match.lower() else None
+            if direction and ref_direction and direction != ref_direction:
+                confidence = 0.0
+                print(f"Direction mismatch: Detected {direction}, Expected {ref_direction}")
+            else:
+                confidence = 0.5
+        elif "stop" in supposed_match.lower():
+            confidence = validate_stop_sign(frame_rgb, frame_keypoints)
+
+        # SVM classification with directional features
+        red_ratio = np.sum(cv2.inRange(cv2.cvtColor(frame_rgb, cv2.COLOR_BGR2HSV), 
+                                       np.array([0, 120, 70]), np.array([10, 255, 255]))) / (FRAME_WIDTH * FRAME_HEIGHT * 255)
+        contours, _ = cv2.findContours(cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1], 
+                                       cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        verticality = 1.0 if contours and cv2.boundingRect(contours[0])[3] > cv2.boundingRect(contours[0])[2] else 0.2
+        horizontality = 1.0 if contours and cv2.boundingRect(contours[0])[2] > cv2.boundingRect(contours[0])[3] else 0.2
+        features = np.array([[red_ratio, verticality, horizontality]])
+        svm_pred = svm_clf.predict_proba(features)[0]
+        if "arrow" in supposed_match.lower():
+            confidence = svm_pred[1 if "left" in supposed_match.lower() else 0]
+        elif "stop" in supposed_match.lower():
+            confidence = max(confidence, svm_pred[2])
+
+    # Stabilize detection with multi-frame consistency
+    current_detection = (supposed_match, confidence)
+    prev_detections.append(current_detection)
+    if len(prev_detections) > max_len:
+        prev_detections.popleft()
+    valid_detections = [(d, c) for d, c in prev_detections if d is not None]
+    if valid_detections:
+        detected_name = max(set([d for d, _ in valid_detections]), key=[d for d, _ in valid_detections].count)
+        avg_confidence = sum(c for _, c in valid_detections) / len(valid_detections)
+        if avg_confidence < 0.6 and len(set([d for d, _ in valid_detections])) > 1:
+            detected_name = None
+            avg_confidence = 0.0
+    else:
+        detected_name = None
+        avg_confidence = 0.0
+
+    # Generate match image for debug window
+    match_img = None
+    if supposed_match and supposed_match_count > 0 and frame_keypoints and supposed_keypoints:
+        ref_img = reference_images[supposed_match][2]
+        try:
+            match_img = cv2.drawMatches(gray, frame_keypoints, ref_img, supposed_keypoints, 
+                                       supposed_matches_list[:30], None, flags=2)
+            cv2.putText(match_img, f"Supposed Match: {supposed_match}", (10, 30), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            cv2.putText(match_img, f"Matches: {supposed_match_count}", (10, 60), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            cv2.putText(match_img, f"Confidence: {avg_confidence:.2f}", (10, 90), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            if "arrow" in supposed_match.lower():
+                cv2.putText(match_img, f"Direction: {direction or 'Unknown'}", (10, 120), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        except cv2.error as e:
+            print(f"Error in drawMatches: {e}")
+            match_img = gray
+
+    return match_img, detected_name or "None", avg_confidence, supposed_match, supposed_match_count, supposed_matches_list, supposed_keypoints, frame_keypoints
 
 # Main function
 def main():
@@ -629,12 +737,15 @@ def main():
         GPIO.cleanup()
         return
     
-    # Load template images
-    templates, template_names = load_templates()
-    if not templates:
+    # Load template images and initialize ORB and SVM
+    reference_images, orb = load_templates()
+    if not reference_images:
         print(f"No template images found in {TEMPLATE_DIR}. Please add template images.")
     else:
-        print(f"Loaded template images: {template_names}")
+        print(f"Loaded template images: {list(reference_images.keys())}")
+    
+    svm_clf = train_svm_classifier()
+    prev_detections = deque()  # For multi-frame consistency
     
     # Load or initialize color ranges
     color_ranges = load_color_calibration()
@@ -713,11 +824,13 @@ def main():
                         # Draw shape text on debug frame for all contours
                         cv2.putText(debug_frame, shape_text, (cX, cY), cv2.FONT_HERSHEY_DUPLEX, 0.6, (255, 255, 255), 2)  # Changed font
             
-            # Perform template matching
-            match_frame, match_name, match_score = perform_template_matching(frame, templates, template_names)
+            # Perform template matching with ORB
+            match_img, match_name, match_confidence, supposed_match, supposed_match_count, supposed_matches_list, supposed_keypoints, frame_keypoints = perform_template_matching(
+                frame, orb, reference_images, svm_clf, prev_detections
+            )
             
             # Display status information
-            status_text = f"Shape: {final_shape_text} | Frame: {frame_count} | Match: {match_name} ({match_score:.2f})"
+            status_text = f"Shape: {final_shape_text} | Frame: {frame_count} | Match: {match_name} ({match_confidence:.2f})"
             cv2.putText(frame, status_text, (10, FRAME_HEIGHT - 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
             
@@ -730,7 +843,8 @@ def main():
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
             cv2.imshow("Debug Matching", debug_mask_bgr)
             # Show template matching result
-            cv2.imshow("Template Matching", match_frame)
+            if match_img is not None:
+                cv2.imshow("Template Matching", match_img)
             
             # Save debug images every 10 frames
             if frame_count % 10 == 0:
@@ -738,7 +852,8 @@ def main():
                 cv2.imwrite(os.path.join(IMG_DIR, f"main_{timestamp}_{frame_count}.jpg"), frame)
                 cv2.imwrite(os.path.join(IMG_DIR, f"debug_{timestamp}_{frame_count}.jpg"), debug_frame)
                 cv2.imwrite(os.path.join(IMG_DIR, f"mask_{timestamp}_{frame_count}.jpg"), debug_mask_bgr)
-                cv2.imwrite(os.path.join(IMG_DIR, f"match_{timestamp}_{frame_count}.jpg"), match_frame)
+                if match_img is not None:
+                    cv2.imwrite(os.path.join(IMG_DIR, f"match_{timestamp}_{frame_count}.jpg"), match_img)
             
             frame_count += 1
             
