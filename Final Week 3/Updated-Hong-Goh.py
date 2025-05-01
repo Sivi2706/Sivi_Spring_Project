@@ -5,8 +5,8 @@ from picamera2 import Picamera2
 
 class SymbolRecognizer:
     def __init__(self, script_dir):
-        # Set the directory to Img recg, located in the Week-3 subdirectory
-        self.symbol_dir = os.path.join(os.path.dirname(script_dir), "Week-3", "Img recg")
+        # Set the directory to Img recg, located in Final Week 3
+        self.symbol_dir = "/home/raspberry/Documents/S2V2/Sivi_Spring_Project/Final Week 3/Img recg"
         # Dictionary: symbol_name -> (color_template (RGB), gray_template, contour)
         self.symbol_templates = {}
         self.calibrate()
@@ -47,7 +47,7 @@ class SymbolRecognizer:
                             print(f"Loaded template: {symbol_name}")
 
         if not self.symbol_templates:
-            print("No templates found in Img recg folder. Exiting.")
+            print("Nowegs found in Img recg folder. Exiting.")
             exit()
         print(f"Loaded {len(self.symbol_templates)} templates from Img recg folder.")
         input("Press Enter to continue...")
