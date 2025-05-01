@@ -6,7 +6,7 @@ import json
 import os
 from picamera2 import Picamera2
 import math
-import uuid
+import glob
 
 # Define GPIO pins
 IN1, IN2 = 22, 27         # Left motor control
@@ -51,6 +51,10 @@ CALIBRATION_FILE = "color_calibration.json"
 IMG_DIR = "/home/raspberry/Documents/S2V2/Sivi_Spring_Project/Final Week 3/Img recg"
 if not os.path.exists(IMG_DIR):
     os.makedirs(IMG_DIR)
+
+# Template images directory
+TEMPLATE_DIR = IMG_DIR
+TEMPLATE_EXTENSIONS = ['*.png', '*.jpg', '*.jpeg']  # Supported image extensions
 
 # Default color ranges (HSV format) in case calibration file is not found
 default_color_ranges = {
@@ -325,7 +329,7 @@ def calibrate_color(picam2, color_ranges, color_name):
                                 s_max_l = min(255, np.max(lower_red_pixels[:, 1]) + 20)
                                 v_min_l = max(0, np.min(lower_red_pixels[:, 2]) - 20)
                                 v_max_l = min(255, np.max(lower_red_pixels[:, 2]) + 20)
-                                color_ranges['red'][0] = ([h_min_l, s_min_l, v_min_l], [h_min_l, s_max_l, v_max_l])
+                                color_ranges['red'][0] = ([h_min_l, s_min_l, v_min_l], [h_max_l, s_max_l, v_max_l])
                                 print(f"Lower red range: [{h_min_l}, {s_min_l}, {v_min_l}] to [{h_max_l}, {s_max_l}, {v_max_l}]")
                             
                             if len(upper_red_pixels) > 0:
@@ -476,16 +480,17 @@ def detect_line(frame, color_priorities, color_ranges):
 
     return 0, False, None, [], debug_mask
 
-# Shape detection function
+# Shape detection function with improved consistency
 def detect_shape(cnt, frame, hsv_frame):
     shape = "unknown"
     peri = cv2.arcLength(cnt, True)
     area = cv2.contourArea(cnt)
  
     if area < 500 or len(cnt) < 3:
-         return shape, None
+        return shape, None
  
-    epsilon = 0.03 * peri if area > 1000 else 0.05 * peri
+    # Adjust epsilon for better approximation
+    epsilon = 0.02 * peri  # Reduced for more precise shape detection
     approx = cv2.approxPolyDP(cnt, epsilon, True)
     num_vertices = len(approx)
     
@@ -550,10 +555,70 @@ def detect_shape(cnt, frame, hsv_frame):
         return "hexagon", cnt
     elif num_vertices > 6:
         circularity = (4 * math.pi * area) / (peri * peri)
-        shape = "full circle" if circularity > 0.8 else "partial circle"
+        shape = "full circle" if circularity > 0.85 else "partial circle"  # Increased threshold for circularity
         return shape, cnt
 
     return shape, None
+
+# Load template images
+def load_templates():
+    templates = []
+    template_names = []
+    for ext in TEMPLATE_EXTENSIONS:
+        template_paths = glob.glob(os.path.join(TEMPLATE_DIR, ext))
+        for path in template_paths:
+            template = cv2.imread(path)
+            if template is not None:
+                templates.append(template)
+                template_names.append(os.path.basename(path))
+    return templates, template_names
+
+# Template matching function
+def perform_template_matching(frame, templates, template_names):
+    if not templates:
+        return frame, "No Templates", 0.0
+    
+    gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    best_match_score = -float('inf')
+    best_match_frame = frame.copy()
+    best_template_name = "None"
+    best_template = None
+    
+    for template, name in zip(templates, template_names):
+        gray_template = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
+        
+        # Skip if template is larger than frame
+        if gray_template.shape[0] > gray_frame.shape[0] or gray_template.shape[1] > gray_frame.shape[1]:
+            continue
+        
+        # Perform template matching
+        result = cv2.matchTemplate(gray_frame, gray_template, cv2.TM_CCOEFF_NORMED)
+        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
+        
+        if max_val > best_match_score:
+            best_match_score = max_val
+            best_template_name = name
+            best_template = template
+            
+            # Draw rectangle around the matched area
+            w, h = gray_template.shape[::-1]
+            top_left = max_loc
+            bottom_right = (top_left[0] + w, top_left[1] + h)
+            best_match_frame = frame.copy()
+            cv2.rectangle(best_match_frame, top_left, bottom_right, (0, 255, 0), 2)
+            cv2.putText(best_match_frame, f"Match: {name} ({max_val:.2f})", (top_left[0], top_left[1] - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+    
+    # Create a combined image with template and matched result
+    if best_template is not None:
+        w, h = best_template.shape[1], best_template.shape[0]
+        template_display = cv2.resize(best_template, (w, h))
+        combined = np.zeros((max(h, FRAME_HEIGHT), w + FRAME_WIDTH, 3), dtype=np.uint8)
+        combined[:h, :w] = template_display
+        combined[:FRAME_HEIGHT, w:w+FRAME_WIDTH] = best_match_frame
+        return combined, best_template_name, best_match_score
+    
+    return frame, "No Match", 0.0
 
 # Main function
 def main():
@@ -563,6 +628,13 @@ def main():
         print("Exiting program. Camera could not be initialized.")
         GPIO.cleanup()
         return
+    
+    # Load template images
+    templates, template_names = load_templates()
+    if not templates:
+        print(f"No template images found in {TEMPLATE_DIR}. Please add template images.")
+    else:
+        print(f"Loaded template images: {template_names}")
     
     # Load or initialize color ranges
     color_ranges = load_color_calibration()
@@ -627,8 +699,8 @@ def main():
                         matched_contour = contour
 
                     print(f"Detected shape: {shape}")
-                    # Draw all contours in red on debug frame
-                    cv2.drawContours(debug_frame, [cnt], -1, (0, 0, 255), 2)
+                    # Draw all contours in cyan on debug frame
+                    cv2.drawContours(debug_frame, [cnt], -1, (0, 255, 255), 2)  # Changed to cyan
                     # Draw matched contour in green if it matches the final shape
                     if matched_contour is not None and np.array_equal(cnt, matched_contour):
                         cv2.drawContours(debug_frame, [cnt], -1, (0, 255, 0), 3)
@@ -637,12 +709,15 @@ def main():
                         cX = int(M["m10"] / M["m00"])
                         cY = int(M["m01"] / M["m00"])
                         # Draw shape text on main frame
-                        cv2.putText(frame, final_shape_text, (cX, cY), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+                        cv2.putText(frame, final_shape_text, (cX, cY), cv2.FONT_HERSHEY_DUPLEX, 0.6, (255, 255, 255), 2)  # Changed font
                         # Draw shape text on debug frame for all contours
-                        cv2.putText(debug_frame, shape_text, (cX, cY), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+                        cv2.putText(debug_frame, shape_text, (cX, cY), cv2.FONT_HERSHEY_DUPLEX, 0.6, (255, 255, 255), 2)  # Changed font
+            
+            # Perform template matching
+            match_frame, match_name, match_score = perform_template_matching(frame, templates, template_names)
             
             # Display status information
-            status_text = f"Shape: {final_shape_text} | Frame: {frame_count}"
+            status_text = f"Shape: {final_shape_text} | Frame: {frame_count} | Match: {match_name} ({match_score:.2f})"
             cv2.putText(frame, status_text, (10, FRAME_HEIGHT - 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
             
@@ -654,6 +729,8 @@ def main():
             cv2.putText(debug_mask_bgr, "Color Mask", (10, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
             cv2.imshow("Debug Matching", debug_mask_bgr)
+            # Show template matching result
+            cv2.imshow("Template Matching", match_frame)
             
             # Save debug images every 10 frames
             if frame_count % 10 == 0:
@@ -661,6 +738,7 @@ def main():
                 cv2.imwrite(os.path.join(IMG_DIR, f"main_{timestamp}_{frame_count}.jpg"), frame)
                 cv2.imwrite(os.path.join(IMG_DIR, f"debug_{timestamp}_{frame_count}.jpg"), debug_frame)
                 cv2.imwrite(os.path.join(IMG_DIR, f"mask_{timestamp}_{frame_count}.jpg"), debug_mask_bgr)
+                cv2.imwrite(os.path.join(IMG_DIR, f"match_{timestamp}_{frame_count}.jpg"), match_frame)
             
             frame_count += 1
             
